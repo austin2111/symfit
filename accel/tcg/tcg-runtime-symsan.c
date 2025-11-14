@@ -7,7 +7,14 @@
 #include "tcg.h"
 #include "qemu/cutils.h"
 #include "dfsan_interface.h"
-extern CPUArchState *global_env;
+
+#ifdef CONFIG_2nd_CCACHE
+#ifndef CONFIG_USER_ONLY
+// System-mode definitions (user-mode has them in linux-user/i386/cpu_loop.c)
+int noSymbolicData = 1;
+//int second_ccache_flag = 0;
+#endif
+#endif
 #define CONST_LABEL 0
 
 static const uint64_t kShadowMask = ~0x700000000000;
@@ -691,9 +698,10 @@ uint64_t HELPER(symsan_setcond_i64)(CPUArchState *env, uint64_t arg1, uint64_t a
 
 /* Guest memory opreation */
 static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr, uint64_t addr_label,
-                                     uint64_t load_length, uint8_t result_length)
+                                     uint64_t load_length, uint8_t result_length, uint64_t mmu_idx)
 {
-    void *host_addr = g2h(addr);
+    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
+    //void *host_addr = g2h(addr);
     
     if (addr_label) {
         // fprintf(stderr, "sym load addr 0x%lx eip 0x%lx\n", addr, env->eip);
@@ -711,15 +719,15 @@ static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr,
 }
 
 uint64_t HELPER(symsan_load_guest_i32)(CPUArchState *env, target_ulong addr, uint64_t addr_label,
-                                 uint64_t length)
+                                 uint64_t length, uint64_t mmu_idx)
 {
-    return symsan_load_guest_internal(env, addr, addr_label, length, 4);
+    return symsan_load_guest_internal(env, addr, addr_label, length, 4, mmu_idx);
 }
 
 uint64_t HELPER(symsan_load_guest_i64)(CPUArchState *env, target_ulong addr, uint64_t addr_label,
-                                 uint64_t length)
+                                 uint64_t length, uint64_t mmu_idx)
 {
-    return symsan_load_guest_internal(env, addr, addr_label, length, 8);
+    return symsan_load_guest_internal(env, addr, addr_label, length, 8, mmu_idx);
 }
 
 
@@ -746,7 +754,7 @@ uint64_t HELPER(symsan_load_host_i64)(void *addr, uint64_t offset, uint64_t leng
 }
 
 static void symsan_store_guest_internal(CPUArchState *env, uint64_t value_label,
-                                     target_ulong addr, uint64_t addr_label, uint64_t length)
+                                     target_ulong addr, uint64_t addr_label, uint64_t length, uint64_t mmu_idx)
 {
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic]op: store_guest_i%ld addr: 0x%lx size: %ld value_expr: %ld\n",
@@ -759,8 +767,8 @@ static void symsan_store_guest_internal(CPUArchState *env, uint64_t value_label,
         __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, true, Equal, 0, 0, env->eip);
     }
 
-    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
-    void *host_addr = g2h(addr);
+    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    //void *host_addr = g2h(addr);
     assert((uintptr_t)host_addr >= 0x700000040000);
     dfsan_store_label(value_label, (uint8_t*)host_addr, length);
     // g_assert_not_reached();
@@ -768,15 +776,15 @@ static void symsan_store_guest_internal(CPUArchState *env, uint64_t value_label,
 }
 
 void HELPER(symsan_store_guest_i32)(CPUArchState *env, uint64_t value_label,
-                                 target_ulong addr, uint64_t addr_label, uint64_t length)
+                                 target_ulong addr, uint64_t addr_label, uint64_t length, uint64_t mmu_idx)
 {
-    symsan_store_guest_internal(env, value_label, addr, addr_label, length);
+    symsan_store_guest_internal(env, value_label, addr, addr_label, length, mmu_idx);
 }
 
 void HELPER(symsan_store_guest_i64)(CPUArchState *env, uint64_t value_label,
-                                 target_ulong addr, uint64_t addr_label, uint64_t length)
+                                 target_ulong addr, uint64_t addr_label, uint64_t length, uint64_t mmu_idx)
 {
-    symsan_store_guest_internal(env, value_label, addr, addr_label, length);
+    symsan_store_guest_internal(env, value_label, addr, addr_label, length, mmu_idx);
 }
 
 void HELPER(symsan_store_host_i32)(uint64_t value_label,
@@ -808,8 +816,9 @@ void HELPER(symsan_store_host_i64)(uint64_t value_label,
 /* Monitor load in concrete mode, if load symbolic data, switch to symbolic mode
  * currently, we do this in the translation backend.
  */
-void HELPER(symsan_check_load_guest)(CPUArchState *env, target_ulong addr, uint64_t length) {
-    void *host_addr = g2h(addr);
+void HELPER(symsan_check_load_guest)(CPUArchState *env, target_ulong addr, uint64_t length, uint64_t mmu_idx) {
+    //void *host_addr = g2h(addr);
+    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
     assert((uintptr_t)host_addr >= 0x700000040000);
     uint32_t res_label = dfsan_read_label((uint8_t*)host_addr, length);
     if (res_label != 0) {
@@ -821,11 +830,11 @@ void HELPER(symsan_check_load_guest)(CPUArchState *env, target_ulong addr, uint6
         raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
     }
 }
-void HELPER(symsan_check_store_guest)(target_ulong addr, uint64_t length){
+void HELPER(symsan_check_store_guest)(CPUArchState *env, target_ulong addr, uint64_t length, uint64_t mmu_idx){
     assert(second_ccache_flag != 1);
     uint32_t value_label = 0;
-    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
-    void *host_addr = g2h(addr);
+    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    //void *host_addr = g2h(addr);
     assert((uintptr_t)host_addr >= 0x700000040000);
     // if (!noSymbolicData)
     // fprintf(stderr, "[memtrace] op: check_store_guest addr: 0x%lx mode: concrete\n", addr);

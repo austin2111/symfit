@@ -733,10 +733,9 @@ struct TCGContext {
     CPUState *cpu;                      /* *_trans */
 
     /* These structures are private to tcg-target.inc.c.  */
-#ifdef TCG_TARGET_NEED_LDST_LABELS
+#if defined(TCG_TARGET_NEED_LDST_LABELS)
     QSIMPLEQ_HEAD(, TCGLabelQemuLdst) ldst_labels;
-#endif
-#ifdef CONFIG_2nd_CCACHE
+#elif defined(CONFIG_2nd_CCACHE)
     QSIMPLEQ_HEAD(, TCGLabelQemuLdst) ldst_labels;
 #endif
 #ifdef TCG_TARGET_NEED_POOL_LABELS

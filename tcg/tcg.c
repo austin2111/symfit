@@ -153,7 +153,7 @@ static void tcg_out_call(TCGContext *s, tcg_insn_unit *target);
 static int tcg_target_const_match(tcg_target_long val, TCGType type,
                                   const TCGArgConstraint *arg_ct);
 #ifdef TCG_TARGET_NEED_LDST_LABELS
-static int tcg_out_ldst_finalize(TCGContext *s);
+int tcg_out_ldst_finalize(TCGContext *s);
 #endif
 #define TCG_HIGHWATER 1024
 

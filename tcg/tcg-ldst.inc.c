@@ -62,10 +62,13 @@ static int tcg_out_symldst_finalize(TCGContext *s)
     }
     return 0;
 }
+int tcg_out_ldst_finalize(TCGContext *s) {
+    return tcg_out_symldst_finalize(s);
+}
 #else
 static bool tcg_out_qemu_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
 static bool tcg_out_qemu_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
-static int tcg_out_ldst_finalize(TCGContext *s)
+int tcg_out_ldst_finalize(TCGContext *s)
 {
     TCGLabelQemuLdst *lb;
 
