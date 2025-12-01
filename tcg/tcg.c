@@ -1258,6 +1258,7 @@ TCGTemp *tcg_global_mem_new_internal(TCGType type, TCGv_ptr base,
     ts_expr->indirect_reg = indirect_reg;
     ts_expr->mem_allocated = 1;
     ts_expr->mem_base = base_ts;
+    /*
     if (strstart(name, "r", NULL)) {
         //map ts_expr to shadow_regs
         ts_expr->mem_offset = offset + CPU_NB_REGS*sizeof(target_ulong);
@@ -1272,6 +1273,64 @@ TCGTemp *tcg_global_mem_new_internal(TCGType type, TCGv_ptr base,
         //map shadow temp for global args
         ts_expr->mem_offset = offset + sizeof(target_ulong);
     } else {
+        ts_expr->mem_offset = base_ts->sym_offset + expr_idx * sizeof(void *);
+    }
+    */
+
+    if (strstart(name, "r", NULL)) {
+        // Matches: x86 registers (rax, rbx, etc.) OR ARM AArch32 (r0-r15)
+    #ifdef TARGET_I386
+        ts_expr->mem_offset = offset + CPU_NB_REGS * sizeof(target_ulong);
+    #elif defined(TARGET_ARM) || defined(TARGET_AARCH64)
+        int reg_num = (offset - offsetof(CPUARMState, regs)) / sizeof(uint32_t);
+        ts_expr->mem_offset = offsetof(CPUARMState, shadow_regs) + 
+                             reg_num * sizeof(uint32_t);
+    #endif
+    }
+
+    #ifdef TARGET_I386
+    else if (strstart(name, "e", NULL)) {
+        ts_expr->mem_offset = offset + CPU_NB_REGS * sizeof(target_ulong);
+    }
+    #endif
+
+    #if defined(TARGET_AARCH64)
+    else if (strstart(name, "x", NULL)) {
+        // ARM AArch64 registers (x0-x31)
+        int reg_num = (offset - offsetof(CPUARMState, xregs)) / sizeof(uint64_t);
+        ts_expr->mem_offset = offsetof(CPUARMState, shadow_xregs) + 
+                             reg_num * sizeof(uint64_t);
+    }
+    #endif
+
+    #ifdef TARGET_I386
+    else if (strstart(name, "cc_d", NULL)) {
+        ts_expr->mem_offset = offset - sizeof(target_ulong) * 5;
+    } 
+    else if (strstart(name, "cc_s", NULL)) {
+        ts_expr->mem_offset = offset - sizeof(target_ulong) * 5;
+    }
+    #endif
+
+    #if defined(TARGET_ARM) || defined(TARGET_AARCH64)
+    else if (strcmp(name, "CF") == 0) {
+        ts_expr->mem_offset = offsetof(CPUARMState, shadow_CF);
+    }
+    else if (strcmp(name, "NF") == 0) {
+        ts_expr->mem_offset = offsetof(CPUARMState, shadow_NF);
+    }
+    else if (strcmp(name, "VF") == 0) {
+        ts_expr->mem_offset = offsetof(CPUARMState, shadow_VF);
+    }
+    else if (strcmp(name, "ZF") == 0) {
+        ts_expr->mem_offset = offsetof(CPUARMState, shadow_ZF);
+    }
+    #endif
+
+    else if (strstart(name, "global", NULL)) {
+        ts_expr->mem_offset = offset + sizeof(target_ulong);
+    } 
+    else {
         ts_expr->mem_offset = base_ts->sym_offset + expr_idx * sizeof(void *);
     }
     pstrcpy(buf, sizeof(buf), name);

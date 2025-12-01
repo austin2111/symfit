@@ -23,6 +23,10 @@
 #include "cpu_loop-common.h"
 #include "qemu/guest-random.h"
 
+#ifdef CONFIG_2nd_CCACHE
+int noSymbolicData = 1;
+#endif
+
 #define get_user_code_u32(x, gaddr, env)                \
     ({ abi_long __r = get_user_u32((x), (gaddr));       \
         if (!__r && bswap_code(arm_sctlr_b(env))) {     \

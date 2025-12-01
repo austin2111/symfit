@@ -987,6 +987,7 @@ static void user_tlb_init(CPUState *cpu)
 
     user_tlb_dyn_init(env);
 }
+
 void cpu_exec_realizefn(CPUState *cpu, Error **errp)
 {
     CPUClass *cc = CPU_GET_CLASS(cpu);

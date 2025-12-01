@@ -344,7 +344,8 @@ static void sym_store_guest_internal(CPUArchState *env, uint64_t value, void *va
         _sym_push_path_constraint(
             _sym_build_equal(
                 addr_expr, _sym_build_integer(addr, sizeof(addr) * 8)),
-            true, env->eip);
+            //true, env->eip);
+            true, get_pc(env));
     //if (!noSymbolicData)
     //fprintf(stderr, "[memtrace] op: store_guest addr: 0x%lx value_expr: %p addr_expr: %p mode: symbolic eip: 0x%lx\n",
     //                    addr, value_expr, addr_expr, cur_eip);
@@ -623,7 +624,8 @@ static void *sym_setcond_internal(CPUArchState *env, uint64_t arg1, void *arg1_e
     void *condition = handler(arg1_expr, arg2_expr);
     //_sym_push_path_constraint(condition, result, get_pc(env));
     //_sym_notify_basic_block(cur_eip);
-    _sym_push_path_constraint(condition, result, env->eip);
+    //_sym_push_path_constraint(condition, result, env->eip);
+    _sym_push_path_constraint(condition, result, get_pc(env));
 
     // FIXME: Commented out the following two lines for now.
     // because _sym_build_bool_to_bit is a helper added in newer version of symcc.
@@ -676,20 +678,62 @@ void HELPER(sym_collect_garbage)(void)
  */
 void HELPER(sym_check_state_switch)(CPUArchState *env) {
     int symbolic_flag = 0;
-    for (int i=0; i<CPU_NB_REGS;i++) {
+    #ifdef TARGET_AARCH64 // TO DO: Do this in the rest of the for loops
+
+    /* ARM is a little different; 64/32 bit mode switches involve using
+     * a fundamentally different set of registers rather than the 32 LSBs of
+     * the first half. 32-bit x86 on an x86-64 chip, by contrast, shares the
+     * same registers in both modes.
+     */
+    if (env->aarch64) {
+        // Register 31 is always zero/sp register, so we're not checking it
+        for (unsigned char i=0; i<31;i++) {
+            if (env->shadow_xregs[i]) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
+    else {
+        // 32-bit mode check
+        for (unsigned char i=0; i<16;i++) {
+            if (env->shadow_regs[i]) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
+    #elif defined(TARGET_ARM)
+    for (unsigned char i=0; i<16;i++) {
+        if (env->shadow_regs[i]) {
+            symbolic_flag = 1;
+            break;
+        }
+    }
+    #else
+    for (unsigned char i=0; i<CPU_NB_REGS;i++) {
         if (env->shadow_regs[i]){
             symbolic_flag = 1;
             break;
         }
     }
+    #endif
     if (symbolic_flag) {
         second_ccache_flag = 1;
         //if (!noSymbolicData) fprintf(stderr, "block 0x%lx state symbolic\n", env->eip);
         return;
     }
+    #ifdef TARGET_I386
     if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
         symbolic_flag = 1;
     }
+    #elif defined(TARGET_AARCH64)
+    if (env->shadow_CF || env->shadow_NF || env->shadow_VF || env->shadow_ZF) {
+        symbolic_flag = 1;
+    }
+    #endif
+
+    #ifdef TARGET_I386
     if (sse_operation) {
         int size = sizeof(env->xmm_regs);
         uintptr_t xmm_reg_addr = (uintptr_t)env->xmm_regs;
@@ -702,6 +746,7 @@ void HELPER(sym_check_state_switch)(CPUArchState *env) {
             }
         }
     }
+    #endif
     second_ccache_flag = symbolic_flag;
     //if (!noSymbolicData) fprintf(stderr, "block 0x%lx state %s\n", env->eip, second_ccache_flag?"symbolic":"concrete");
     if (second_ccache_flag == 0) {
@@ -711,19 +756,63 @@ void HELPER(sym_check_state_switch)(CPUArchState *env) {
 }
 void HELPER(sym_check_state)(CPUArchState *env) {
     int symbolic_flag = 0;
-    for (int i=0; i<CPU_NB_REGS;i++) {
+
+    #ifdef TARGET_AARCH64 // TO DO: Do this in the rest of the for loops
+
+    /* ARM is a little different; 64/32 bit mode switches involve using
+     * a fundamentally different set of registers rather than the 32 LSBs of
+     * the first half. 32-bit x86 on an x86-64 chip, by contrast, shares the
+     * same registers in both modes.
+     */
+    if (env->aarch64) {
+        // Register 31 is always zero/sp register, so we're not checking it
+        for (unsigned char i=0; i<31;i++) {
+            if (env->shadow_xregs[i]) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
+    else {
+        // 32-bit mode check
+        for (unsigned char i=0; i<16;i++) {
+            if (env->shadow_regs[i]) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
+    #elif defined(TARGET_ARM)
+    for (unsigned char i=0; i<16;i++) {
         if (env->shadow_regs[i]) {
             symbolic_flag = 1;
             break;
         }
     }
+    #else
+    for (unsigned char i=0; i<CPU_NB_REGS;i++) {
+        if (env->shadow_regs[i]){
+            symbolic_flag = 1;
+            break;
+        }
+    }
+    #endif
+
     if (symbolic_flag) {
         second_ccache_flag = 1;
         return;
     }
+    #ifdef TARGET_I386
     if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
         symbolic_flag = 1;
     }
+    #elif defined(TARGET_AARCH64)
+    if (env->shadow_CF || env->shadow_NF || env->shadow_VF || env->shadow_ZF) {
+        symbolic_flag = 1;
+    }
+    #endif
+
+    #ifdef TARGET_I386
     if (sse_operation) {
         int size = sizeof(env->xmm_regs);
         uintptr_t xmm_reg_addr = (uintptr_t)env->xmm_regs;
@@ -736,6 +825,7 @@ void HELPER(sym_check_state)(CPUArchState *env) {
             }
         }
     }
+    #endif
     second_ccache_flag = symbolic_flag;
 }
 /* Monitor load in concrete mode, if load symbolic data, switch to symbolic mode
@@ -751,7 +841,13 @@ void HELPER(sym_check_load_guest)(CPUArchState *env, target_ulong addr, uint64_t
     //                addr, memory_expr, env->eip);
     if (memory_expr != NULL) {
         second_ccache_flag = 1;
+        #ifdef TARGET_I386
         raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
+        #elif defined(TARGET_ARM)
+        raise_exception_ra(env, EXCP_SWITCH, 0, 1, GETPC());
+        #else
+        #error "Unsupported architecture for symbolic execution"
+        #endif
     }
 }
 
@@ -761,7 +857,13 @@ void HELPER(sym_check_load_host)(CPUArchState *env, void *addr, uint64_t offset,
         (uint8_t*)addr + offset, load_length, true);
     if (memory_expr != NULL) {
         second_ccache_flag = 1;
+        #ifdef TARGET_I386
         raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
+        #elif defined(TARGET_ARM)
+        raise_exception_ra(env, EXCP_SWITCH, 0, 1, GETPC());
+        #else
+        #error "Unsupported architecture for symbolic execution"
+        #endif
     }
 }
 
@@ -771,7 +873,13 @@ void HELPER(sym_check_load_host)(CPUArchState *env, void *addr, uint64_t offset,
 void HELPER(sym_check_store_guest_i32)(CPUArchState *env, target_ulong addr,
                                  uint64_t length, uint64_t mmu_idx){
     if (second_ccache_flag) {
+        #ifdef TARGET_I386
         raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
+        #elif defined(TARGET_ARM)
+        raise_exception_ra(env, EXCP_SWITCH, 0, 1, GETPC());
+        #else
+        #error "Unsupported architecture for symbolic execution"
+        #endif
     }
     void *value_expr = NULL;
     void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
@@ -783,7 +891,13 @@ void HELPER(sym_check_store_guest_i64)(CPUArchState *env, target_ulong addr,
                                  uint64_t length, uint64_t mmu_idx){
 
     if (second_ccache_flag) {
+        #ifdef TARGET_I386
         raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
+        #elif defined(TARGET_ARM)
+        raise_exception_ra(env, EXCP_SWITCH, 0, 1, GETPC());
+        #else
+        #error "Unsupported architecture for symbolic execution"
+        #endif
     }
     void *value_expr = NULL;
     void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);

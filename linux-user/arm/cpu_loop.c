@@ -413,6 +413,9 @@ void cpu_loop(CPUARMState *env)
         case EXCP_ATOMIC:
             cpu_exec_step_atomic(cs);
             break;
+        case EXCP_SWITCH:
+            /* No current action for switch exception */
+            break;
         default:
         error:
             EXCP_DUMP(env, "qemu: unhandled CPU exception 0x%x - aborting\n", trapnr);

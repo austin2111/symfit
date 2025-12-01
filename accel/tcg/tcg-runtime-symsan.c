@@ -8,6 +8,25 @@
 #include "qemu/cutils.h"
 #include "dfsan_interface.h"
 
+static bool demo_set = 0;
+
+static target_ulong get_pc(CPUArchState *env)
+{
+    target_ulong pc, cs_base;
+    uint32_t flags;
+
+    cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+
+    return pc;
+}
+
+/*
+#ifdef TARGET_ARM
+void raise_exception_ra(CPUARMState *env, uint32_t excp, uint32_t syndrome,
+                        uint32_t target_el, uintptr_t ra);
+#endif
+*/
+
 #ifdef CONFIG_2nd_CCACHE
 #ifndef CONFIG_USER_ONLY
 // System-mode definitions (user-mode has them in linux-user/i386/cpu_loop.c)
@@ -679,7 +698,10 @@ static uint64_t symsan_setcond_internal(CPUArchState *env, uint64_t arg1, uint64
         g_assert_not_reached();
     }
     // fprintf(stderr, "sym branch 0x%lx\n", env->eip);
-    return __taint_trace_cmp(arg1_label, arg2_label, result_bits, result, predicate, arg1, arg2, env->eip);
+
+    //return __taint_trace_cmp(arg1_label, arg2_label, result_bits, result, predicate, arg1, arg2, env->eip);
+    // Changed to architecture-independent program counter
+    return __taint_trace_cmp(arg1_label, arg2_label, result_bits, result, predicate, arg1, arg2, get_pc(env));
 }
 
 uint64_t HELPER(symsan_setcond_i32)(CPUArchState *env, uint32_t arg1, uint64_t arg1_label,
@@ -697,17 +719,20 @@ uint64_t HELPER(symsan_setcond_i64)(CPUArchState *env, uint64_t arg1, uint64_t a
 }
 
 /* Guest memory opreation */
+// TO DO: Replace CPUArchState in the calling convention with CPUState?
 static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr, uint64_t addr_label,
                                      uint64_t load_length, uint8_t result_length, uint64_t mmu_idx)
 {
-    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
+    void *host_addr = tlb_vaddr_to_host_orig(env, addr, MMU_DATA_LOAD, mmu_idx);
+    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
     //void *host_addr = g2h(addr);
-    
+    if (host_addr == NULL) return 0; // No dfsan label associated with a null address
     if (addr_label) {
         // fprintf(stderr, "sym load addr 0x%lx eip 0x%lx\n", addr, env->eip);
         dfsan_label addr_label_new = \
-            dfsan_union(addr_label, CONST_LABEL, Equal, 64, addr, 0);
-        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, true, Equal, 0, 0, env->eip);
+            // Changed addr to host_addr in dfsan_union
+            dfsan_union(addr_label, CONST_LABEL, Equal, 64, (target_ulong) host_addr, 0);
+        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, true, Equal, 0, 0, get_pc(env));
     }
 
     uint64_t res_label = dfsan_read_label((uint8_t*)host_addr, load_length);
@@ -727,6 +752,10 @@ uint64_t HELPER(symsan_load_guest_i32)(CPUArchState *env, target_ulong addr, uin
 uint64_t HELPER(symsan_load_guest_i64)(CPUArchState *env, target_ulong addr, uint64_t addr_label,
                                  uint64_t length, uint64_t mmu_idx)
 {
+    static int call_count = 0;
+    if (call_count++ % 1000 == 0) {
+        fprintf(stderr, "[SYMBOLIC HELPER] symsan_load_guest_i64 called %d times\n", call_count);
+    }
     return symsan_load_guest_internal(env, addr, addr_label, length, 8, mmu_idx);
 }
 
@@ -734,7 +763,10 @@ uint64_t HELPER(symsan_load_guest_i64)(CPUArchState *env, target_ulong addr, uin
 static uint64_t symsan_load_host_internal(void *addr, uint64_t offset,
                                     uint64_t load_length, uint64_t result_length)
 {
+    #ifdef TARGET_I386
+    // This assert really only applies to x86 address space...
     assert((uintptr_t)addr+offset >= 0x700000040000);
+    #endif
     uint64_t res_label = dfsan_read_label((uint8_t*)addr + offset, load_length);
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_HOST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic]op: load_host_i%ld addr: %p size: %ld memory_expr: %ld\n",
@@ -760,17 +792,28 @@ static void symsan_store_guest_internal(CPUArchState *env, uint64_t value_label,
         fprintf(stderr, "[memtrace:symbolic]op: store_guest_i%ld addr: 0x%lx size: %ld value_expr: %ld\n",
                      length*8, addr, length, value_label);
     }
+    // TO DO: Is storing based on host_addr here valid? If not, move tlb_vaddr_to_host() back down below the if (addr_label) statement and replace host_addr in dfsan_union() with addr
+    void *host_addr = tlb_vaddr_to_host_orig(env, addr, MMU_DATA_STORE, mmu_idx);
+    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    //void *host_addr = g2h(addr);
+    fprintf(stderr, "[STORE] addr=0x%lx, host_addr = %p, PC=0x%lx\n", addr, host_addr, GETPC());
+    fflush(stderr);
+    if (host_addr == NULL) return; // Don't store labels for a null address
     if (addr_label) {
         // fprintf(stderr, "sym store addr 0x%lx eip 0x%lx\n", addr, env->eip);
+        // Replaced addr with host_addr in dfsan_union()
         dfsan_label addr_label_new = \
-            dfsan_union(addr_label, CONST_LABEL, Equal, 64, addr, 0);
-        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, true, Equal, 0, 0, env->eip);
+            dfsan_union(addr_label, CONST_LABEL, Equal, 64, (target_ulong) host_addr, 0);
+        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, true, Equal, 0, 0, get_pc(env));
     }
 
-    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
-    //void *host_addr = g2h(addr);
+    #ifdef TARGET_I386
     assert((uintptr_t)host_addr >= 0x700000040000);
+    #endif
+    fprintf(stderr, "[STORE] Storing label %lu...\n", value_label);
+    fflush(stderr);
     dfsan_store_label(value_label, (uint8_t*)host_addr, length);
+    fprintf(stderr, "[STORE] dfsan_store_label() terminated successfully!\n");
     // g_assert_not_reached();
 
 }
@@ -791,7 +834,9 @@ void HELPER(symsan_store_host_i32)(uint64_t value_label,
                                 void *addr,
                                 uint64_t offset, uint64_t length)
 {
+    #ifdef TARGET_I386
     assert((uintptr_t)addr+offset >= 0x700000040000);
+    #endif
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_HOST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic] op: store_host_i32 addr: %p value_label: %ld length %ld\n",
                         addr+offset, value_label, length);
@@ -807,7 +852,9 @@ void HELPER(symsan_store_host_i64)(uint64_t value_label,
         fprintf(stderr, "[memtrace:symbolic] op: store_host_i64 addr: %p value_label: %ld length %ld\n",
                         addr+offset, value_label, length);
     }
+    #ifdef TARGET_I386
     assert((uintptr_t)addr+offset >= 0x700000040000);
+    #endif
     dfsan_store_label(value_label, (uint8_t*)addr + offset, length);
 }
 
@@ -818,24 +865,76 @@ void HELPER(symsan_store_host_i64)(uint64_t value_label,
  */
 void HELPER(symsan_check_load_guest)(CPUArchState *env, target_ulong addr, uint64_t length, uint64_t mmu_idx) {
     //void *host_addr = g2h(addr);
-    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
-    assert((uintptr_t)host_addr >= 0x700000040000);
+    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
+    void *host_addr = tlb_vaddr_to_host_orig(env, addr, MMU_DATA_LOAD, mmu_idx);
+    if (host_addr == NULL) return;
+    #ifdef TARGET_I386
+    if (addr == 0x10000000) {
+    #else
+    // For the moment, the catch-all is an address for ARM targets. We should try other architectures as well.
+
+    if (addr >= 0xFFFF000000000000ULL) {
+        return;
+    }
+    if (addr == 0x50000000) {
+    #endif
+        if (demo_set == 0) {
+            demo_set = 1;
+            printf("ZOMG LOAD FROM 0x%lx DETECTED!!!!11\n", addr);
+            if (second_ccache_flag == 0) {
+                printf("[DEBUG] About to call dfsan_set_label\n");
+                fflush(stdout);
+                dfsan_set_label(0xBEEF, (uint8_t*)host_addr, 8);
+                printf("[DEBUG] dfsan_set_label returned successfully\n");
+                fflush(stdout);
+                printf("[TAINT] Test taint set at host %p\n", host_addr);
+            }
+        }
+    }
+    //assert((uintptr_t)host_addr >= 0x700000040000);
     uint32_t res_label = dfsan_read_label((uint8_t*)host_addr, length);
     if (res_label != 0) {
+        printf("[DEBUG] Non-zero label detected (%u), about to raise exception\n", res_label);
+        printf("[DEBUG] Symbolic load at PC=0x%lx, addr=0x%lx, host_addr=0x%p kernel=%d\n",
+                GETPC(),  // Current PC
+                addr, host_addr,
+                addr >= 0xFFFF000000000000ULL);
+        fflush(stdout);
         if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
             // fprintf(stderr, "[memtrace:switch] op: load_guest addr: 0x%lx host_addr %p mode: concrete\n",
             //                         addr, host_addr);
         }
         second_ccache_flag = 1;
+        printf("[DEBUG] About to call raise_exception\n");
+        fflush(stdout);
+        #ifdef TARGET_I386
         raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
+        #elif defined(TARGET_ARM)
+        CPUState *cs = env_cpu(env);
+        printf("[DEBUG] Setting exception_index\n");
+        cs->exception_index = EXCP_SWITCH;
+        printf("Calling cpu_loop_exit_restore with PC %lx\n", GETPC());
+        cpu_loop_exit_restore(cs, GETPC());
+        //raise_exception_ra(env, EXCP_SWITCH, 0, 1, GETPC());
+        #else
+        #error "Unsupported architecture for symbolic execution"
+        #endif
+        printf("[DEBUG] After raise_exception (should not print)\n");
+        fflush(stdout);
     }
 }
 void HELPER(symsan_check_store_guest)(CPUArchState *env, target_ulong addr, uint64_t length, uint64_t mmu_idx){
     assert(second_ccache_flag != 1);
     uint32_t value_label = 0;
-    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    void *host_addr = tlb_vaddr_to_host_orig(env, addr, MMU_DATA_STORE, mmu_idx);
+    if (host_addr == NULL) return; // Don't store labels for a null address
     //void *host_addr = g2h(addr);
-    assert((uintptr_t)host_addr >= 0x700000040000);
+    /*
+    if ((uintptr_t) host_addr < 0x700000040000) {
+        printf("WARNING: host_addr is %p\n", host_addr);
+    }
+    */
+    //assert((uintptr_t)host_addr >= 0x700000040000);
     // if (!noSymbolicData)
     // fprintf(stderr, "[memtrace] op: check_store_guest addr: 0x%lx mode: concrete\n", addr);
     dfsan_store_label(value_label, (uint8_t*)host_addr, length);
@@ -846,20 +945,63 @@ void HELPER(symsan_check_store_guest)(CPUArchState *env, target_ulong addr, uint
  */
 void HELPER(symsan_check_state_switch)(CPUArchState *env) {
     int symbolic_flag = 0;
-    for (int i=0; i<CPU_NB_REGS;i++) {
+    #ifdef TARGET_AARCH64 // TO DO: Do this in the rest of the for loops
+
+    /* ARM is a little different; 64/32 bit mode switches involve using
+     * a fundamentally different set of registers rather than the 32 LSBs of
+     * the first half. 32-bit x86 on an x86-64 chip, by contrast, shares the
+     * same registers in both modes. 
+     */
+    if (env->aarch64) {
+        // Register 31 is always zero/sp register, so we're not checking it
+        for (unsigned char i=0; i<31;i++) {
+            if (env->shadow_xregs[i]) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
+    else {
+        // 32-bit mode check
+        for (unsigned char i=0; i<16;i++) {
+            if (env->shadow_regs[i]) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
+    #elif defined(TARGET_ARM)
+    for (unsigned char i=0; i<16;i++) {
+        if (env->shadow_regs[i]) {
+            symbolic_flag = 1;
+            break;
+        }
+    }
+    #else
+    for (unsigned char i=0; i<CPU_NB_REGS;i++) {
         if (env->shadow_regs[i]){
             symbolic_flag = 1;
             break;
         }
     }
+    #endif
     if (symbolic_flag) {
         second_ccache_flag = 1;
         //if (!noSymbolicData) fprintf(stderr, "block 0x%lx state symbolic\n", env->eip);
         return;
     }
+    #ifdef TARGET_I386
     if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
         symbolic_flag = 1;
     }
+    #elif defined(TARGET_AARCH64)
+    if (env->shadow_CF || env->shadow_NF || env->shadow_VF || env->shadow_ZF) {
+        symbolic_flag = 1;
+    }
+    #endif
+
+    // TO DO: Should we add support for the equivalent NEON registers in ARM?
+    #ifdef TARGET_I386
     if (!symbolic_flag && sse_operation) {
         int size = sizeof(env->xmm_regs);
         uintptr_t xmm_reg_addr = (uintptr_t)env->xmm_regs;
@@ -872,6 +1014,7 @@ void HELPER(symsan_check_state_switch)(CPUArchState *env) {
             }
         }
     }
+    #endif
     second_ccache_flag = symbolic_flag;
     if (second_ccache_flag == 0) {
         CPUState *cs = env_cpu(env);
@@ -880,19 +1023,61 @@ void HELPER(symsan_check_state_switch)(CPUArchState *env) {
 }
 void HELPER(symsan_check_state)(CPUArchState *env) {
     int symbolic_flag = 0;
-    for (int i=0; i<CPU_NB_REGS;i++) {
+    #ifdef TARGET_AARCH64 // TO DO: Do this in the rest of the for loops
+
+    /* ARM is a little different; 64/32 bit mode switches involve using
+     * a fundamentally different set of registers rather than the 32 LSBs of
+     * the first half. 32-bit x86 on an x86-64 chip, by contrast, shares the
+     * same registers in both modes.
+     */
+    if (env->aarch64) {
+        // Register 31 is always zero/sp register, so we're not checking it
+        for (unsigned char i=0; i<31;i++) {
+            if (env->shadow_xregs[i]) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
+    else {
+        // 32-bit mode check
+        for (unsigned char i=0; i<16;i++) {
+            if (env->shadow_regs[i]) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
+    #elif defined(TARGET_ARM)
+    for (unsigned char i=0; i<16;i++) {
         if (env->shadow_regs[i]) {
             symbolic_flag = 1;
             break;
         }
     }
+    #else
+    for (unsigned char i=0; i<CPU_NB_REGS;i++) {
+        if (env->shadow_regs[i]){
+            symbolic_flag = 1;
+            break;
+        }
+    }
+    #endif
     if (symbolic_flag) {
         second_ccache_flag = 1;
         return;
     }
+    #ifdef TARGET_I386
     if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
         symbolic_flag = 1;
     }
+    #elif defined(TARGET_AARCH64)
+    if (env->shadow_CF || env->shadow_NF || env->shadow_VF || env->shadow_ZF) {
+        symbolic_flag = 1;
+    }
+    #endif
+
+    #ifdef TARGET_I386
     if (!symbolic_flag && sse_operation) {
         int size = sizeof(env->xmm_regs);
         uintptr_t xmm_reg_addr = (uintptr_t)env->xmm_regs;
@@ -905,25 +1090,66 @@ void HELPER(symsan_check_state)(CPUArchState *env) {
             }
         }
     }
+    #endif
     second_ccache_flag = symbolic_flag;
 }
 
 void HELPER(symsan_check_state_no_sse)(CPUArchState *env) {
     int symbolic_flag = 0;
-    for (int i=0; i<CPU_NB_REGS;i++) {
+    #ifdef TARGET_AARCH64 // TO DO: Do this in the rest of the for loops
+
+    /* ARM is a little different; 64/32 bit mode switches involve using
+     * a fundamentally different set of registers rather than the 32 LSBs of
+     * the first half. 32-bit x86 on an x86-64 chip, by contrast, shares the
+     * same registers in both modes.
+     */
+    if (env->aarch64) {
+        // Register 31 is always zero/sp register, so we're not checking it
+        for (unsigned char i=0; i<31;i++) {
+            if (env->shadow_xregs[i]) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
+    else {
+        // 32-bit mode check
+        for (unsigned char i=0; i<16;i++) {
+            if (env->shadow_regs[i]) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
+    #elif defined(TARGET_ARM)
+    for (unsigned char i=0; i<16;i++) {
+        if (env->shadow_regs[i]) {
+            symbolic_flag = 1;
+            break;
+        }
+    }
+    #else
+    for (unsigned char i=0; i<CPU_NB_REGS;i++) {
         if (env->shadow_regs[i]){
             symbolic_flag = 1;
             break;
         }
     }
+    #endif
     if (symbolic_flag) {
         second_ccache_flag = 1;
         //if (!noSymbolicData) fprintf(stderr, "block 0x%lx state symbolic\n", env->eip);
         return;
     }
+    #ifdef TARGET_I386
     if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
         symbolic_flag = 1;
     }
+    #elif defined(TARGET_AARCH64)
+    if (env->shadow_CF || env->shadow_NF || env->shadow_VF || env->shadow_ZF) {
+        symbolic_flag = 1;
+    }
+    #endif
     second_ccache_flag = symbolic_flag;
     // if (!noSymbolicData) fprintf(stderr, "block 0x%lx state %s\n", env->eip, second_ccache_flag?"symbolic":"concrete");
     if (second_ccache_flag == 0) {
