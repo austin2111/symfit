@@ -39,7 +39,6 @@ RUN mkdir -p /tmp/solver /workdir/results
 
 WORKDIR /workdir
 COPY run/ /workdir/
-COPY run/demo_scripts/*.sh /workdir/
 RUN find /workdir -name "*.sh" -exec chmod +x {} \;
 
 
