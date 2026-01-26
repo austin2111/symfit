@@ -217,7 +217,6 @@ typedef struct CPUARMState {
     uint64_t xregs[32];
     uint64_t pc;
 
-
     /* Shadow registers for covering 32 and 64-bit modes */
     uint32_t shadow_regs[16];
     uint64_t shadow_xregs[32];
@@ -693,6 +692,7 @@ typedef struct CPUARMState {
     const struct arm_boot_info *boot_info;
     /* Store GICv3CPUState to access from this struct */
     void *gicv3state;
+    uint32_t symsan_instrument_syscalls; // Claude asked for this. We should probably remove it.
 } CPUARMState;
 
 /**

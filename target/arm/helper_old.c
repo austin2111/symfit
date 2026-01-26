@@ -38,30 +38,6 @@
 
 #define ARM_CPU_FREQ 1000000000 /* FIXME: 1 GHz, should be configurable */
 
-#if !defined(CONFIG_USER_ONLY)
-void *symsan_safe_gva_to_hva(CPUARMState *env, target_ulong addr, int mmu_idx) {
-    // 1. Check if the page is even mapped in the guest's page tables
-    // This is safe to call from helpers and doesn't trigger TLB exceptions.
-    CPUState *cs = env_cpu(env);
-    CPUClass *cc = CPU_GET_CLASS(cs);
-    MemTxAttrs attrs = {};
-    hwaddr paddr = cc->get_phys_page_attrs_debug(cs, addr, &attrs);
-    if (paddr == (hwaddr)-1) return NULL;
-
-    // 2. Now that we know it's mapped, we can try to get the host address.
-    // We use the 'orig' version or a direct lookup to avoid the assert(!probe).
-    // If your version of QEMU has 'probe_read', use it with retaddr=0.
-
-    // As a fallback, since we verified paddr exists, we can use
-    // QEMU's memory region lookups, but that's overkill.
-
-    // Let's try the most robust exported function for helpers:
-    printf("DEBUG: Current MMU Index: %d\n", mmu_idx);
-    int safe_idx = (addr >> 63) ? mmu_idx : 1;
-    return tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, safe_idx);
-}
-#endif
-
 extern bool instrument_syscalls; // TO DO: Is this still used?
 
 void HELPER(symsan_instrument_syscall)(CPUARMState *env)
@@ -76,9 +52,7 @@ void HELPER(symsan_instrument_syscall)(CPUARMState *env)
         cs->in_symsan_helper = false;
         return;
     }
-
-    static off_t labelnum = 0; // For unique labels
-
+    
     printf("[SYMSAN] Syscall %lu: x0=0x%lx x1=0x%lx x2=0x%lx x3=0x%lx x4=0x%lx x5=0x%lx\n",
            syscall_num, env->xregs[0], env->xregs[1], env->xregs[2], 
            env->xregs[3], env->xregs[4], env->xregs[5]);
@@ -99,25 +73,10 @@ void HELPER(symsan_instrument_syscall)(CPUARMState *env)
         
         uint64_t arg_value = env->xregs[i];
         // Create unique identifier for this argument
+        identifier = dfsan_create_label((syscall_num << 8) | i);
         switch (arg_type) {
-            case ARG_STR:
-                if (arg_value == 0) break;
-                #if !defined(CONFIG_USER_ONLY)
-                host_addr = symsan_safe_gva_to_hva(env, arg_value, cpu_mmu_index(env, false));
-                #else
-                host_addr = tlb_vaddr_to_host(env, arg_value, MMU_DATA_LOAD,
-                                                   cpu_mmu_index(env, false));
-                #endif
-                if (host_addr != NULL) {
-                    env->shadow_xregs[i] = 0; // Clear out the shadow register; NO REGISTER TAINT PLZ
-                    printf("DEBUG: Host address returned from translation is %p\n", host_addr);
-                    unsigned short strlength = strnlen(host_addr, 512);
-                    for(unsigned short j = 0; j < strlength; j++) {
-                        identifier = dfsan_create_label(labelnum++);
-                        dfsan_set_label(identifier, (void *)host_addr+j, 1, env->pc); // Test code, please remove (uint8_t*)
-                    }
-                }
-            case ARG_PTR: {
+            case ARG_PTR:
+            case ARG_STR: {
                 if (arg_value == 0) break;
                 // NULL pointer env->shadow_xregs[i] = 0; // We don't want to actually taint the register in this case
                 // New idea - dereference the memory and taint *that*
@@ -128,17 +87,12 @@ void HELPER(symsan_instrument_syscall)(CPUARMState *env)
                 */
 
                 // Optionally taint the memory it points to
-                #if !defined(CONFIG_USER_ONLY)
-                host_addr = symsan_safe_gva_to_hva(env, arg_value, cpu_mmu_index(env, false));
-                #else
-                host_addr = tlb_vaddr_to_host(env, arg_value, MMU_DATA_LOAD, 
+                host_addr = tlb_vaddr_to_host_orig(env, arg_value, MMU_DATA_LOAD, 
                                                    cpu_mmu_index(env, false));
-                #endif
                 if (host_addr != NULL) {
                     env->shadow_xregs[i] = 0; // Clear out the shadow register; NO REGISTER TAINT PLZ
-                    printf("DEBUG: Host address returned from translation is %p\n", host_addr);
-                    identifier = dfsan_create_label(labelnum++);
-                    dfsan_set_label(identifier, (void *)host_addr, 1, env->pc); // Test code, please remove (uint8_t*)
+
+                    dfsan_set_label(identifier, host_addr, 8); // Test code, please remove
                     /*
                     size_t size = (arg_type == ARG_STR) ? 8 :8; // Changed from 256:8 to 1:1 for testing
                     dfsan_set_label(identifier, host_addr, size); // Temporarily disabled - also for testing
@@ -169,22 +123,67 @@ void HELPER(symsan_instrument_syscall)(CPUARMState *env)
                 break;
                 */
             case ARG_LONG:
+if (arg_value < 1024) {
+        // If the value is small, it's likely an FD or a count (like x2=2).
+        // DO NOT TAINT IT. Keep it concrete.
+        env->shadow_xregs[i] = 0;
+        printf("  x%d = %ld (count) -> FORCED CONCRETE\n", i, arg_value);
+}
+else if (arg_value > 0xffff00000000) {
+        /* This is actually a pointer! Treat it as ARG_PTR */
+        host_addr = tlb_vaddr_to_host_orig(env, arg_value, MMU_DATA_LOAD, cpu_mmu_index(env, false));
+        if (host_addr) {
+            env->shadow_xregs[i] = 0;
+            dfsan_set_label(identifier, host_addr, 8);
+            printf("  x%d = 0x%lx (PTR FIXUP) -> Buffer tainted\n", i, arg_value);
+        }
+    } else {
         /* It's a real integer, taint the register */
         //full_label = __taint_union(identifier, CONST_LABEL, ZExt, 64, 0, 0);
-
-        //env->shadow_xregs[i] = identifier;
+        env->shadow_xregs[i] = identifier;
+    }
             break;
             case ARG_INT:
+if (arg_value < 1024) {
+        // If the value is small, it's likely an FD or a count (like x2=2).
+        // DO NOT TAINT IT. Keep it concrete.
+        env->shadow_xregs[i] = 0;
+        printf("  x%d = %ld (count) -> FORCED CONCRETE\n", i, arg_value);
+}
+else if (arg_value > 0xffff00000000) {
+        /* This is actually a pointer! Treat it as ARG_PTR */
+        host_addr = tlb_vaddr_to_host_orig(env, arg_value, MMU_DATA_LOAD, cpu_mmu_index(env, false));
+        if (host_addr) {
+            env->shadow_xregs[i] = 0;
+            dfsan_set_label(identifier, host_addr, 8);
+            printf("  x%d = 0x%lx (PTR FIXUP) -> Buffer tainted\n", i, arg_value);
+        }
+    } else {
         /* It's a real integer, taint the register */
         //full_label = __taint_union(identifier, CONST_LABEL, ZExt, 32, 0, 0);
-
-        //env->shadow_xregs[i] = identifier;
+        env->shadow_xregs[i] = identifier;
+    }
             break;
             case ARG_SHORT:
+if (arg_value < 1024) {
+        // If the value is small, it's likely an FD or a count (like x2=2).
+        // DO NOT TAINT IT. Keep it concrete.
+        env->shadow_xregs[i] = 0;
+        printf("  x%d = %ld (count) -> FORCED CONCRETE\n", i, arg_value);
+}
+else if (arg_value > 0xffff00000000) {
+        /* This is actually a pointer! Treat it as ARG_PTR */
+        host_addr = tlb_vaddr_to_host_orig(env, arg_value, MMU_DATA_LOAD, cpu_mmu_index(env, false));
+        if (host_addr) {
+            env->shadow_xregs[i] = 0;
+            dfsan_set_label(identifier, host_addr, 8);
+            printf("  x%d = 0x%lx (PTR FIXUP) -> Buffer tainted\n", i, arg_value);
+        }
+    } else {
         /* It's a real integer, taint the register */
         //full_label = __taint_union(identifier, CONST_LABEL, ZExt, 16, 0, 0);
-
-        //env->shadow_xregs[i] = identifier;
+        env->shadow_xregs[i] = identifier;
+    }
             break;
             case ARG_CHAR:
                 /*
@@ -193,11 +192,27 @@ void HELPER(symsan_instrument_syscall)(CPUARMState *env)
                 printf("  x%d = 0x%lx (int) → label %u\n", i, arg_value, full_label);
                 break;
                 */
+// Test code, please remove/change
+if (arg_value < 1024) { 
+        // If the value is small, it's likely an FD or a count (like x2=2).
+        // DO NOT TAINT IT. Keep it concrete.
+        env->shadow_xregs[i] = 0;
+        printf("  x%d = %ld (count) -> FORCED CONCRETE\n", i, arg_value);
+}
+else if (arg_value > 0xffff00000000) {
+        /* This is actually a pointer! Treat it as ARG_PTR */
+        host_addr = tlb_vaddr_to_host_orig(env, arg_value, MMU_DATA_LOAD, cpu_mmu_index(env, false));
+        if (host_addr) {
+            env->shadow_xregs[i] = 0; 
+            dfsan_set_label(identifier, host_addr, 8);
+            printf("  x%d = 0x%lx (PTR FIXUP) -> Buffer tainted\n", i, arg_value);
+        }
+    } else {
         /* It's a real integer, taint the register */
         //full_label = __taint_union(identifier, CONST_LABEL, ZExt, 8, 0, 0);
         //env->shadow_xregs[i] = full_label;
-
-        //env->shadow_xregs[i] = identifier;
+        env->shadow_xregs[i] = identifier;
+    }
             break;
             default:
                 printf("  x%d - unknown type %d\n", i, arg_type);
@@ -8375,6 +8390,109 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
     case EXCP_BKPT:
     case EXCP_UDEF:
     case EXCP_SWI:
+    /*
+        if (instrument_syscalls == 1) {
+            // Here be dragons
+
+            if (env->xregs[8] > 452) {
+                printf("ERROR: syscall out of bounds: %lu\n", env->xregs[8]);
+            }
+            else {
+                printf("DEBUG: Hey, we caught a syscall! Syscall num: %lu | x0: 0x%lx | x1: 0x%lx | x2: 0x%lx | x3: 0x%lx | x4: 0x%lx | x5: 0x%lx\n", env->xregs[8], env->xregs[0], env->xregs[1], env->xregs[2], env->xregs[3], env->xregs[4], env->xregs[5]);
+                unsigned int full_label; // Can't declare in switch states
+                uint32_t identifier;
+                uint64_t ptr;
+                static unsigned int ptr_label = 0xBEF0;
+                void *host_addr;
+                for (unsigned char iterator = 0; iterator < 6; iterator++) {
+                    printf("DEBUG: At top of loop\n");
+                    switch(syscall_args_table[env->xregs[8]].arg_type[iterator]) {
+                        case ARG_PTR:
+                            //identifier = dfsan_create_label((((env->pc - 4) & 0xFFFF) << 16) | ((env->xregs[8] & 0xFF) << 8) | (iterator & 0xFF));
+                            //identifier = (((env->pc - 4) & 0xFFFF) << 16) | ((env->xregs[8] & 0xFF) << 8) | (iterator & 0xFF);
+    ptr = env->xregs[iterator];
+    if (ptr == 0) break;
+    
+    // Just taint the register containing the pointer
+    identifier = dfsan_create_label((((env->pc - 4) & 0xFFFF) << 16) | 
+                                   ((env->xregs[8] & 0xFF) << 8) | (iterator & 0xFF));
+    full_label = __taint_union(identifier, CONST_LABEL, ZExt, 64, 0, 0);
+    env->shadow_xregs[iterator] = full_label;
+    
+    printf("DEBUG: x%d = 0x%lx (ptr) -> register label %u\n",
+           iterator, ptr, full_label);
+    
+    // Optionally taint the memory too
+    host_addr = tlb_vaddr_to_host_orig(env, ptr, MMU_DATA_LOAD, cpu_mmu_index(env, false));
+    if (host_addr != NULL) {
+        dfsan_set_label(identifier, host_addr, 256);  // Taint what it points to
+    }
+
+                            /*
+                            ptr = env->xregs[iterator];
+                            if (ptr == 0) break; // Yyyyyeah, we're not instrumenting a null pointer.
+                            // The MMU index lookup is sort of a crapshoot. Hopefully this doesn't blow up in our face.
+                            
+                            host_addr = tlb_vaddr_to_host_orig(env, ptr, MMU_DATA_LOAD, cpu_mmu_index(env, false) );
+                            printf("DEBUG: host_addr returns %p\n", host_addr);
+                            if (host_addr == NULL) break;
+                            printf("DEBUG: Instrumenting ARG_PTR using identifier 0x%x with pointer 0x%lx, size 8\n", ptr_label, ptr);
+                            // Since this was crashing, let's try instrumenting *just* the pointer.
+                            dfsan_set_label(ptr_label, host_addr, 8); // Note: post increment for ptr_label
+                            printf("DEBUG: dfsan_set_label returned successfully!\n");
+                            env->shadow_xregs[iterator] = ptr_label++;
+                            printf("DEBUG: Stored ptr_label to shadow_xregs\n");
+                            printf("Hats\n");
+                            */
+                            /*
+                            break;
+                        case ARG_STR:
+                            identifier = dfsan_create_label((((env->pc - 4) & 0xFFFF) << 16) | ((env->xregs[8] & 0xFF) << 8) | (iterator & 0xFF));
+                            ptr = env->xregs[iterator];
+                            if (ptr == 0) break; // JUST NO. ALL THE NO.
+                            // The MMU index lookup is sort of a crapshoot. Hopefully this doesn't blow up in our face.
+                            
+                            host_addr = tlb_vaddr_to_host_orig(env, ptr, MMU_DATA_LOAD, cpu_mmu_index(env, false) );
+                            printf("DEBUG: host_addr returns %p\n", host_addr);
+                            if (host_addr == NULL) break;
+                            dfsan_set_label(identifier, host_addr, 256); // TO DO: Should we strlen it? strnlen maybe?
+                            printf("DEBUG: Instrumenting ARG_STR using identifier 0x%x with pointer 0x%lx, size 256\n", identifier, ptr);
+                            break;
+                        case ARG_FD:
+                            // ...what exactly should we do with file descriptor?
+                            break;
+                        case ARG_LONGLONG:
+                            // Create a 32-bit identifier that won't truncate badly
+                            identifier = dfsan_create_label((((env->pc - 4) & 0xFFFF) << 16) | ((env->xregs[8] & 0xFF) << 8) | (iterator & 0xFF));
+                            
+                            //dlabel = dfsan_create_label((env->xregs[8] << 8) | iterator);
+                            full_label = __taint_union(identifier, CONST_LABEL, Load, 64, 0, 0);
+                            
+                            env->shadow_xregs[iterator] = full_label;
+                            printf("DEBUG: x%d = 0x%lx (long long) -> label %u\n", iterator, env->xregs[iterator], full_label);
+                            break;
+                        case ARG_LONG:
+                        case ARG_INT:
+                        case ARG_SHORT:
+                        case ARG_CHAR:
+                            // dfsan labels are 32 bits
+                            identifier = dfsan_create_label((((env->pc - 4) & 0xFFFF) << 16) | ((env->xregs[8] & 0xFF) << 8) | (iterator & 0xFF));
+                            full_label = __taint_union(identifier, CONST_LABEL, ZExt, 64, 0, 0);
+                            env->shadow_xregs[iterator] = full_label;
+                            printf("DEBUG: x%d = 0x%lx (int) -> label %u\n", iterator, env->xregs[iterator], full_label);
+                            break;
+                        case ARG_NONE:
+                            // Nothing to be done; this argument isn't used. Actually, we should probably directly exit the loop.
+                            continue;
+                       default:
+                            break;
+                    }
+                    printf("DEBUG: Outside of switch case\n");
+                }
+                printf("DEBUG: Out of for loop\n");
+            }
+        }
+    */
     case EXCP_HVC:
     case EXCP_HYP_TRAP:
     case EXCP_SMC:

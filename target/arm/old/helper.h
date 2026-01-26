@@ -1,4 +1,3 @@
-DEF_HELPER_1(symsan_instrument_syscall, void, env) // Claude instrumentation function
 
 DEF_HELPER_FLAGS_1(sxtb16, TCG_CALL_NO_RWG_SE, i32, i32)
 DEF_HELPER_FLAGS_1(uxtb16, TCG_CALL_NO_RWG_SE, i32, i32)

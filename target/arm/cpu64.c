@@ -104,6 +104,11 @@ static void init_env_exprs(ARMCPU *cpu)
 {
     memset(cpu->env_exprs, 0, sizeof(cpu->env_exprs));
     _sym_register_expression_region(cpu->env_exprs, sizeof(cpu->env_exprs));
+    // Shadow register initialization done here
+    memset(&cpu->env.shadow_regs, 0, sizeof(cpu->env.shadow_regs));
+    _sym_register_expression_region((void*)&cpu->env.shadow_regs, sizeof(cpu->env.shadow_regs));
+    memset(&cpu->env.shadow_xregs, 0, sizeof(cpu->env.shadow_xregs));
+    _sym_register_expression_region((void*)&cpu->env.shadow_xregs, sizeof(cpu->env.shadow_xregs));
 }
 
 static void aarch64_a57_initfn(Object *obj)

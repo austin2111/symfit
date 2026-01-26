@@ -33,6 +33,12 @@
 
 #define NOT_IMPLEMENTED NULL
 
+#ifdef TARGET_ARM
+// Declaration of exception raising function for ARM CPUs
+void raise_exception_ra(CPUARMState *env, uint32_t excp, uint32_t syndrome,
+                        uint32_t target_el, uintptr_t ra);
+#endif
+
 /* A slightly questionable macro to help with the repetitive parts of
  * implementing the symbolic handlers: assuming the existence of concrete
  * arguments "arg1" and "arg2" along with variables "arg1_expr" and "arg2_expr"

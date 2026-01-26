@@ -1,3 +1,4 @@
+
 /*
  * Tiny Code Generator for QEMU
  *
@@ -97,6 +98,7 @@ void tcg_gen_op6(TCGOpcode opc, TCGArg a1, TCGArg a2, TCGArg a3,
 void tcg_gen_ldst_op_i32(TCGOpcode opc, TCGv_i32 val,
                          TCGv_ptr base, TCGArg offset)
 {
+    //if (second_ccache_flag && (tcgv_ptr_arg(base) != tcgv_ptr_arg(cpu_env))) { // Debug line, please remove
     if(second_ccache_flag) {
     uint64_t data_size;
     TCGv_i64 data_size_temp, offset_temp;
@@ -1513,6 +1515,7 @@ void tcg_gen_ld32s_i64(TCGv_i64 ret, TCGv_ptr arg2, tcg_target_long offset)
 
 void tcg_gen_ld_i64(TCGv_i64 ret, TCGv_ptr arg2, tcg_target_long offset)
 {
+
     /* Since arg2 and ret have different types,
        they cannot be the same temporary */
 #ifdef HOST_WORDS_BIGENDIAN
@@ -1526,6 +1529,7 @@ void tcg_gen_ld_i64(TCGv_i64 ret, TCGv_ptr arg2, tcg_target_long offset)
 
 void tcg_gen_st_i64(TCGv_i64 arg1, TCGv_ptr arg2, tcg_target_long offset)
 {
+
 #ifdef HOST_WORDS_BIGENDIAN
     tcg_gen_st_i32(TCGV_HIGH(arg1), arg2, offset);
     tcg_gen_st_i32(TCGV_LOW(arg1), arg2, offset + 4);

@@ -39,8 +39,6 @@
 #include "translate-a64.h"
 #include "qemu/atomic128.h"
 
-extern bool instrument_syscalls;
-
 static TCGv_i64 cpu_X[32];
 static TCGv_i64 cpu_pc;
 
@@ -1881,17 +1879,11 @@ static void disas_exc(DisasContext *s, uint32_t insn)
             TCGv_i32 enable = tcg_temp_new_i32();
             // Convert x0 (64-bit) to enable (32-bit)
             tcg_gen_extrl_i64_i32(enable, x0);
-            gen_helper_set_instrument_flag(cpu_env, enable);
+            gen_helper_set_instrument_flag(enable);
             tcg_temp_free_i32(enable);
             // Don't generate the actual SVC - we handled it
             return;
         }
-        /* This is Claude code pasted in to diagnose a tainting issue */
-        if (instrument_syscalls) {
-            gen_helper_symsan_instrument_syscall(cpu_env);
-        }
-        /* End Claude code */
-
         switch (op2_ll) {
         case 1:                                                     /* SVC */
             gen_ss_advance(s);

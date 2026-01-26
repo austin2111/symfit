@@ -38,6 +38,7 @@
 #include "sysemu/cpus.h"
 #include "sysemu/replay.h"
 
+bool global_flag = 0;
 #ifdef CONFIG_2nd_CCACHE
 int second_ccache_flag = 0;
 int sse_operation = 1;
@@ -512,17 +513,21 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
         if (*ret == EXCP_SWITCH) {
             // Much of this code was added during the debugging phase. Pretty much all of it can be reverted to what's in the previous commit - and in fact, it really should be
             second_ccache_flag = 1;
+            /*
             static int switch_count = 0;
             switch_count++;
             fprintf(stderr, "[EXCP_SWITCH #%d] Handling, second_ccache_flag=%d\n", 
             switch_count, second_ccache_flag);
             tb_flush(cpu);  // Or tb_flush_jmp_cache(cpu)
+            */
             *ret = 0;
             // Clear any exit request
             cpu->exception_index = -1;
-            atomic_set(&cpu->exit_request, 0);
+            //atomic_set(&cpu->exit_request, 0);
+            /*
             fprintf(stderr, "[EXCP_SWITCH #%d] Returning from handler\n", switch_count);
             fflush(stderr);
+            */
             return true;
         }
         cpu->exception_index = -1;

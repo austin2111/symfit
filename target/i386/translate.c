@@ -57,6 +57,8 @@
 # define clztl  clz32
 #endif
 
+extern bool instrument_syscalls;
+
 /* For a switch indexed by MODRM, match all memory operands for a given OP.  */
 #define CASE_MODRM_MEM_OP(OP) \
     case (0 << 6) | (OP << 3) | 0 ... (0 << 6) | (OP << 3) | 7: \
@@ -7263,6 +7265,9 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         /* XXX: is it usable in real mode ? */
         gen_update_cc_op(s);
         gen_jmp_im(s, pc_start - s->cs_base);
+        if (instrument_syscalls) {
+            gen_helper_syscall_instrument(cpu_env);
+        }
         gen_helper_syscall(cpu_env, tcg_const_i32(s->pc - pc_start));
         /* TF handling for the syscall insn is different. The TF bit is  checked
            after the syscall insn completes. This allows #DB to not be

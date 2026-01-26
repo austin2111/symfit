@@ -491,15 +491,8 @@ static inline void *tlb_vaddr_to_host(CPUArchState *env, abi_ptr addr,
 {
     return g2h(addr);
 }
-static inline void *tlb_vaddr_to_host_orig(CPUArchState *env, abi_ptr addr,
-                        MMUAccessType access_type, int mmu_idx)
-{
-    return g2h(addr);
-}
 #else
 void *tlb_vaddr_to_host(CPUArchState *env, abi_ptr addr,
-                        MMUAccessType access_type, int mmu_idx);
-void *tlb_vaddr_to_host_orig(CPUArchState *env, abi_ptr addr,
                         MMUAccessType access_type, int mmu_idx);
 #endif
 

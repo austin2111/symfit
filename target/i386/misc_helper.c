@@ -1,3 +1,4 @@
+
 /*
  *  x86 misc helpers
  *
@@ -24,6 +25,104 @@
 #include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
 #include "exec/address-spaces.h"
+#include "syscall-64_x86.h"
+#include "dfsan_interface.h"
+
+#include "exec/cpu-all.h"
+// ^ This one's for the Gemini-produced function below. Remove if unnecessary.
+
+// Gemini safety function for checking pointer validity
+// This should be an integrated function in newer qemu (supposedly)
+
+#if !defined(CONFIG_USER_ONLY)
+void *symsan_safe_gva_to_hva(CPUX86State *env, target_ulong addr, int mmu_idx) {
+    // 1. Check if the page is even mapped in the guest's page tables
+    // This is safe to call from helpers and doesn't trigger TLB exceptions.
+    //hwaddr paddr = cpu_get_phys_page_debug(env_cpu(env), addr);
+    hwaddr paddr = x86_cpu_get_phys_page_debug(env_cpu(env), addr);
+    if (paddr == -1) {
+        return NULL; // Not mapped, skip safely
+    }
+
+    // 2. Now that we know it's mapped, we can try to get the host address.
+    // We use the 'orig' version or a direct lookup to avoid the assert(!probe).
+    // If your version of QEMU has 'probe_read', use it with retaddr=0.
+    
+    // As a fallback, since we verified paddr exists, we can use 
+    // QEMU's memory region lookups, but that's overkill.
+    
+    // Let's try the most robust exported function for helpers:
+    return tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
+}
+#endif
+
+unsigned char arg_order[] = {R_EDI, R_ESI, R_EDX, R_R10, R_R8, R_R9}; // Syscall order for x86 (7, 6, 2, 10, 8, 9)
+
+void helper_syscall_instrument(CPUX86State *env) {
+    printf("[SYMSAN] Syscall %lu: RDI=0x%lx RSI=0x%lx RDX=0x%lx R10=0x%lx R8=0x%lx R9=0x%lx\n",
+    env->regs[R_EAX], env->regs[R_EDI], env->regs[R_ESI], env->regs[R_EDX],
+    env->regs[R_R10], env->regs[R_R8], env->regs[R_R9]);
+
+    static off_t labelnum = 0; // For unique labels
+
+    const syscall_args_t *syscall_info = &syscall_args_table[env->regs[R_EAX]];
+
+    // For x86, register memory isn't laid out in a sequential way, so we have the array up above to help us
+    for(unsigned char order = 0; order < 6; order++) {
+        if (syscall_info->arg_type[order] == ARG_NONE) break; // No more arguments
+        // Create unique identifier for this argument
+        switch(syscall_info->arg_type[order]) {
+            case ARG_PTR:
+                //break; // Temporary test
+                if (env->regs[arg_order[order]] == 0) break; // Don't instrument a null pointer
+                #if !defined(CONFIG_USER_ONLY)
+                void* host_addr = symsan_safe_gva_to_hva(env, env->regs[arg_order[order]], cpu_mmu_index(env, false));
+                #else
+                void *host_addr = tlb_vaddr_to_host(env, env->regs[arg_order[order]], MMU_DATA_LOAD,
+                                                   cpu_mmu_index(env, false));
+                #endif
+                if (host_addr != NULL) {
+                    env->shadow_regs[arg_order[order]] = 0;
+                    dfsan_label identifier = dfsan_create_label(labelnum++);
+                    dfsan_set_label(identifier, (void *)host_addr, 1, (u64)env->eip); // TO DO: How big should this be?
+                    printf("  x%d = 0x%lx (ptr6) -> Buffer tainted with label %u\n", order, env->regs[arg_order[order]], identifier);
+                }
+                else {
+                    printf("DEBUG: Pointer address not valid! Skipping instrumentation\n");
+                }
+                break;
+            case ARG_STR:
+                break;
+                if (env->regs[arg_order[order]] == 0) break; // Don't instrument a null pointer
+                void *host_str_addr = tlb_vaddr_to_host(env, env->regs[arg_order[order]], MMU_DATA_LOAD,
+                                                   cpu_mmu_index(env, false));
+                if (host_str_addr != NULL) {
+                    env->shadow_regs[arg_order[order]] = 0;
+                    printf("DEBUG: strnlen returned %ld characters\n", strnlen(host_str_addr, 512));
+                    dfsan_label identifier = dfsan_create_label(labelnum++);
+                    dfsan_set_label(identifier, (uint8_t*)host_str_addr, strnlen(host_str_addr, 512), env->eip); // TO DO: How big should this be? Is a cap at 512 reasonable?
+                    printf("  x%d = 0x%lx (ptr6) -> Buffer tainted with label %u\n", order, env->regs[arg_order[order]], identifier);
+                }
+                break;
+            case ARG_FD:
+                printf("  x%d = %d (fd) - skipped\n", order, (int)env->shadow_regs[arg_order[order]]);
+                break;
+            // These used to have __taint_union() functions for register memory based upon the integer size, and should have them again once it's clear this isn't angering the solver
+            case ARG_LONGLONG:
+            case ARG_LONG:
+            case ARG_INT:
+            case ARG_SHORT:
+            case ARG_CHAR:
+                //env->shadow_regs[arg_order[order]] = identifier; Let's not worry about this yet
+                break;
+            default:
+               printf("  x%d - unknown type %d\n", order, syscall_info->arg_type[order]);
+               break;
+        }
+    }
+
+    return;
+}
 
 void helper_outb(CPUX86State *env, uint32_t port, uint32_t data)
 {
@@ -88,6 +187,8 @@ target_ulong helper_inl(CPUX86State *env, uint32_t port)
 #endif
 }
 
+bool instrument_syscalls;
+
 void helper_into(CPUX86State *env, int next_eip_addend)
 {
     int eflags;
@@ -101,6 +202,11 @@ void helper_into(CPUX86State *env, int next_eip_addend)
 void helper_cpuid(CPUX86State *env)
 {
     uint32_t eax, ebx, ecx, edx;
+    if (env->regs[R_EAX] == 0xBEEF) {
+        printf("DEBUG: Hi, you hit the magic instruction! Nice job!\n");
+        instrument_syscalls = (env->regs[R_EDI] == 1);
+        return;
+    }
 
     cpu_svm_check_intercept_param(env, SVM_EXIT_CPUID, 0, GETPC());
 

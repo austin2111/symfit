@@ -161,7 +161,7 @@ static void arm_cpu_reset(CPUState *s)
     ARMCPU *cpu = ARM_CPU(s);
     ARMCPUClass *acc = ARM_CPU_GET_CLASS(cpu);
     CPUARMState *env = &cpu->env;
-
+    s->in_symsan_helper = false; // Test code, please remove
     acc->parent_reset(s);
 
     memset(env, 0, offsetof(CPUARMState, end_reset_fields));

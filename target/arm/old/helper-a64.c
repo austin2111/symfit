@@ -37,10 +37,9 @@
 
 bool instrument_syscalls = false;
 
-void HELPER(set_instrument_flag)(CPUARMState *env, uint32_t enable)
+void HELPER(set_instrument_flag)(uint32_t enable)
 {
     instrument_syscalls = (enable != 0);
-    env->symsan_instrument_syscalls = enable;
     printf("[SYMSAN] Syscall instrumentation %s (x0=%u)\n", 
            instrument_syscalls ? "ENABLED" : "DISABLED", enable);
 }

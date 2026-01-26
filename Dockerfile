@@ -19,6 +19,8 @@ RUN apt-get install clang-12 clang++-12 libc++-12-dev libc++abi-12-dev -y
 
 RUN apt-get install -y parallel libjpeg-turbo8
 
+RUN apt-get install -y nano libcap-dev libcap-ng-dev nodejs npm
+
 RUN git clone https://github.com/Z3Prover/z3.git /z3 && \
 		cd /z3 && git checkout z3-4.8.7 && mkdir -p build && cd build && \
 		cmake .. && make -j && make install
@@ -29,5 +31,15 @@ RUN apt-get update -y && apt-get install -y libopenjp2-7-dev libpng-dev \
                         libjpeg-dev libflac-dev libogg-dev libvorbis-dev libopus-dev \
                         libmp3lame-dev libmpg123-dev libasound2-dev \
                         liblzma-dev libjpeg-turbo8-dev \
-                        libreadline-dev
+                        libreadline-dev expect
+
+RUN pip3 install anthropic
+
+RUN mkdir -p /tmp/solver /workdir/results
+
 WORKDIR /workdir
+COPY run/ /workdir/
+
+RUN find /workdir -name "*.sh" -exec chmod +x {} \;
+
+

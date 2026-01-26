@@ -32,6 +32,7 @@
 #define EXCP_YIELD      0x10004 /* cpu wants to yield timeslice to another */
 #define EXCP_ATOMIC     0x10005 /* stop-the-world and emulate atomic */
 #define EXCP_SWITCH     0x10006 /* signal for code cache switch */
+#define EXCP_SYSCALL_CONTROL  0x10007
 
 /* some important defines:
  *

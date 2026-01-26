@@ -20,12 +20,25 @@ static target_ulong get_pc(CPUArchState *env)
     return pc;
 }
 
-/*
+// For LLM stack monitoring functions:
+
+static inline target_ulong get_stack_pointer(CPUArchState *env);
+
+// Track stack boundaries per-thread
+typedef struct {
+    target_ulong stack_top;     // Highest address (start of stack)
+    target_ulong stack_bottom;  // Lowest address (current SP)
+    target_ulong frame_base;    // Current frame pointer (if available)
+    bool has_frame_pointer;
+} stack_info_t;
+
+static stack_info_t g_stack_info = {0};
+
 #ifdef TARGET_ARM
+// Declaration of exception raising function for ARM CPUs
 void raise_exception_ra(CPUARMState *env, uint32_t excp, uint32_t syndrome,
                         uint32_t target_el, uintptr_t ra);
 #endif
-*/
 
 #ifdef CONFIG_2nd_CCACHE
 #ifndef CONFIG_USER_ONLY
@@ -58,7 +71,8 @@ static inline void *shadow_for(uint64_t ptr) {
 #define DEF_HELPER_BINARY(qemu_name, symsan_name, bit)                              \
     DECL_HELPER_BINARY(qemu_name, bit) {                                            \
         BINARY_HELPER_ENSURE_EXPRESSIONS;                                           \
-        return dfsan_union(arg1_label, arg2_label, symsan_name, bit, arg1, arg2);   \
+        CPUArchState *env = current_cpu->env_ptr;                                   \
+        return dfsan_union(arg1_label, arg2_label, symsan_name, bit, arg1, arg2, get_pc(env) );   \
     }
 
 /* The binary helpers */
@@ -95,178 +109,197 @@ DECL_HELPER_BINARY(rotate_left, 32)
     BINARY_HELPER_ENSURE_EXPRESSIONS
     // UNIMPLEMENTED_HELPER("rotate_left32")
     // arg1 << arg2 | arg1 >> (32 - arg2)
-    uint32_t shl = dfsan_union(arg1_label, arg2_label, Shl, 32, arg1, arg2);
-    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 32, 32, arg2);
-    uint32_t lshr = dfsan_union(arg1_label, tmp, LShr, 32, arg1, 32-arg2);
-    return dfsan_union(shl, lshr, Or, 32, arg1 << arg2, arg1 >> (32 - arg2));
+    CPUArchState *env = current_cpu->env_ptr;
+    uint32_t shl = dfsan_union(arg1_label, arg2_label, Shl, 32, arg1, arg2, get_pc(env));
+    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 32, 32, arg2, get_pc(env));
+    uint32_t lshr = dfsan_union(arg1_label, tmp, LShr, 32, arg1, 32-arg2, get_pc(env));
+    return dfsan_union(shl, lshr, Or, 32, arg1 << arg2, arg1 >> (32 - arg2), get_pc(env));
 }
 DECL_HELPER_BINARY(rotate_left, 64)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
     // UNIMPLEMENTED_HELPER("rotate_left64")
     // arg1 << arg2 | arg1 >> (64 - arg2)
-    uint32_t shl = dfsan_union(arg1_label, arg2_label, Shl, 64, arg1, arg2);
-    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 64, 64, arg2);
-    uint32_t lshr = dfsan_union(arg1_label, tmp, LShr, 64, arg1, 64-arg2);
-    return dfsan_union(shl, lshr, Or, 64, arg1 << arg2, arg1 >> (64 - arg2));
+    CPUArchState *env = current_cpu->env_ptr;
+    uint32_t shl = dfsan_union(arg1_label, arg2_label, Shl, 64, arg1, arg2, get_pc(env));
+    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 64, 64, arg2, get_pc(env));
+    uint32_t lshr = dfsan_union(arg1_label, tmp, LShr, 64, arg1, 64-arg2, get_pc(env));
+    return dfsan_union(shl, lshr, Or, 64, arg1 << arg2, arg1 >> (64 - arg2), get_pc(env));
 }
 DECL_HELPER_BINARY(rotate_right, 32)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
     // UNIMPLEMENTED_HELPER("rotate_right32")
     // arg1 >> arg2 | arg1 << (32 - arg2)
-    uint32_t lshr = dfsan_union(arg1_label, arg2_label, LShr, 32, arg1, arg2);
-    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 32, 32, arg2);
-    uint32_t shl = dfsan_union(arg1_label, tmp, Shl, 32, arg1, 32-arg2);
-    return dfsan_union(lshr, shl, Or, 32, arg1 >> arg2, arg1 << (32 - arg2));
+    CPUArchState *env = current_cpu->env_ptr;
+    uint32_t lshr = dfsan_union(arg1_label, arg2_label, LShr, 32, arg1, arg2, get_pc(env));
+    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 32, 32, arg2, get_pc(env));
+    uint32_t shl = dfsan_union(arg1_label, tmp, Shl, 32, arg1, 32-arg2, get_pc(env));
+    return dfsan_union(lshr, shl, Or, 32, arg1 >> arg2, arg1 << (32 - arg2), get_pc(env));
 }
 DECL_HELPER_BINARY(rotate_right, 64)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
     // UNIMPLEMENTED_HELPER("rotate_right64")
-    uint32_t lshr = dfsan_union(arg1_label, arg2_label, LShr, 64, arg1, arg2);
-    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 64, 64, arg2);
-    uint32_t shl = dfsan_union(arg1_label, tmp, Shl, 64, arg1, 64-arg2);
-    return dfsan_union(lshr, shl, Or, 64, arg1 >> arg2, arg1 << (64 - arg2));
+    CPUArchState *env = current_cpu->env_ptr;
+    uint32_t lshr = dfsan_union(arg1_label, arg2_label, LShr, 64, arg1, arg2, get_pc(env));
+    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 64, 64, arg2, get_pc(env));
+    uint32_t shl = dfsan_union(arg1_label, tmp, Shl, 64, arg1, 64-arg2, get_pc(env));
+    return dfsan_union(lshr, shl, Or, 64, arg1 >> arg2, arg1 << (64 - arg2), get_pc(env));
 }
 
 DECL_HELPER_BINARY(nand, 32)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
+    CPUArchState *env = current_cpu->env_ptr;
     return dfsan_union(CONST_LABEL,
-                        dfsan_union(arg1_label, arg2_label, And, 32, arg1, arg2),
+                        dfsan_union(arg1_label, arg2_label, And, 32, arg1, arg2, get_pc(env)),
                         Not,
                         32,
-                        0, 0);
+                        0, 0, get_pc(env));
 }
 DECL_HELPER_BINARY(nand, 64)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
+    CPUArchState *env = current_cpu->env_ptr;
     return dfsan_union(CONST_LABEL,
-                        dfsan_union(arg1_label, arg2_label, And, 64, arg1, arg2),
+                        dfsan_union(arg1_label, arg2_label, And, 64, arg1, arg2, get_pc(env)),
                         Not,
                         64,
-                        0, 0);
+                        0, 0, get_pc(env));
 }
 
 DECL_HELPER_BINARY(nor, 32)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
+    CPUArchState *env = current_cpu->env_ptr;
     return dfsan_union(CONST_LABEL,
-                        dfsan_union(arg1_label, arg2_label, Or, 32, arg1, arg2),
+                        dfsan_union(arg1_label, arg2_label, Or, 32, arg1, arg2, get_pc(env)),
                         Not,
                         32,
-                        0, 0);
+                        0, 0, get_pc(env));
 }
 DECL_HELPER_BINARY(nor, 64)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
+    CPUArchState *env = current_cpu->env_ptr;
     return dfsan_union(CONST_LABEL,
-                        dfsan_union(arg1_label, arg2_label, Or, 64, arg1, arg2),
+                        dfsan_union(arg1_label, arg2_label, Or, 64, arg1, arg2, get_pc(env)),
                         Not,
                         64,
-                        0, 0);
+                        0, 0, get_pc(env));
 }
 
 DECL_HELPER_BINARY(orc, 32)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
+    CPUArchState *env = current_cpu->env_ptr;
     return dfsan_union(arg1_label,
-                       dfsan_union(arg2_label, CONST_LABEL, Not, 32, arg2, 0),
+                       dfsan_union(arg2_label, CONST_LABEL, Not, 32, arg2, 0, get_pc(env)),
                        Or,
                        32,
-                       arg1, arg2);
+                       arg1, arg2, get_pc(env));
 }
 DECL_HELPER_BINARY(orc, 64)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
+    CPUArchState *env = current_cpu->env_ptr;
     return dfsan_union(arg1_label,
-                       dfsan_union(arg2_label, CONST_LABEL, Not, 64, arg2, 0),
+                       dfsan_union(arg2_label, CONST_LABEL, Not, 64, arg2, 0, get_pc(env)),
                        Or,
                        64,
-                       arg1, arg2);
+                       arg1, arg2, get_pc(env));
 }
 
 /* andc support */
 DECL_HELPER_BINARY(andc, 32)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
+    CPUArchState *env = current_cpu->env_ptr;
     return dfsan_union(arg1_label,
-                       dfsan_union(arg2_label, CONST_LABEL, Not, 32, arg2, 0),
+                       dfsan_union(arg2_label, CONST_LABEL, Not, 32, arg2, 0, get_pc(env)),
                        And,
                        32,
-                       arg1, arg2);
+                       arg1, arg2, get_pc(env));
 }
 DECL_HELPER_BINARY(andc, 64)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
+    CPUArchState *env = current_cpu->env_ptr;
     return dfsan_union(arg1_label,
-                       dfsan_union(arg2_label, CONST_LABEL, Not, 64, arg2, 0),
+                       dfsan_union(arg2_label, CONST_LABEL, Not, 64, arg2, 0, get_pc(env)),
                        And,
                        64,
-                       arg1, arg2);
+                       arg1, arg2, get_pc(env));
 }
 /* eqv support */
 DECL_HELPER_BINARY(eqv, 32)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
-    return dfsan_union(dfsan_union(arg1_label, arg2_label, Xor, 32, arg1, arg2),
+    CPUArchState *env = current_cpu->env_ptr;
+    return dfsan_union(dfsan_union(arg1_label, arg2_label, Xor, 32, arg1, arg2, get_pc(env)),
                        CONST_LABEL,
                        Not,
                        32,
-                       0, 0);
+                       0, 0, get_pc(env));
 }
 
 DECL_HELPER_BINARY(eqv, 64)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
-    return dfsan_union(dfsan_union(arg1_label, arg2_label, Xor, 64, arg1, arg2),
+    CPUArchState *env = current_cpu->env_ptr;
+    return dfsan_union(dfsan_union(arg1_label, arg2_label, Xor, 64, arg1, arg2, get_pc(env)),
                        CONST_LABEL,
                        Not,
                        64,
-                       0, 0);
+                       0, 0, get_pc(env));
 }
 
 uint64_t HELPER(symsan_neg_i32)(uint32_t op1, uint64_t label)
 {
     if (label == 0)
         return 0;
+    CPUArchState *env = current_cpu->env_ptr;
     /* for unary operator Neg/Not, leave the first op as 0 */
-    return dfsan_union(CONST_LABEL, label, Neg, 32, 0, op1);
+    return dfsan_union(CONST_LABEL, label, Neg, 32, 0, op1, get_pc(env));
 }
 uint64_t HELPER(symsan_neg_i64)(uint64_t op1, uint64_t label)
 {
     if (label == 0)
         return 0;
-    return dfsan_union(CONST_LABEL, label, Neg, 64, 0, op1);
+    CPUArchState *env = current_cpu->env_ptr;
+    return dfsan_union(CONST_LABEL, label, Neg, 64, 0, op1, get_pc(env));
 }
 
 uint64_t HELPER(symsan_not_i32)(uint32_t op1, uint64_t label)
 {
     if (label == 0)
         return 0;
-    return dfsan_union(CONST_LABEL, label, Not, 32, 0, op1);
+    CPUArchState *env = current_cpu->env_ptr;
+    return dfsan_union(CONST_LABEL, label, Not, 32, 0, op1, get_pc(env));
 }
 uint64_t HELPER(symsan_not_i64)(uint64_t op1, uint64_t label)
 {
     if (label == 0)
         return 0;
-    return dfsan_union(CONST_LABEL, label, Not, 64, 0, op1);
+    CPUArchState *env = current_cpu->env_ptr;
+    return dfsan_union(CONST_LABEL, label, Not, 64, 0, op1, get_pc(env));
 }
 
 uint64_t HELPER(symsan_muluh_i64)(uint64_t arg1, uint64_t arg1_label,
                                   uint64_t arg2, uint64_t arg2_label)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
-    uint64_t arg1_new = dfsan_union(arg1_label, CONST_LABEL, ZExt, 64, arg1, 64);
-    uint64_t arg2_new = dfsan_union(arg2_label, CONST_LABEL, ZExt, 64, arg2, 64);
-    uint64_t res = dfsan_union(arg1_new, arg2_new, Mul, 64, arg1, arg2);
+    CPUArchState *env = current_cpu->env_ptr;
+    uint64_t arg1_new = dfsan_union(arg1_label, CONST_LABEL, ZExt, 64, arg1, 64, get_pc(env));
+    uint64_t arg2_new = dfsan_union(arg2_label, CONST_LABEL, ZExt, 64, arg2, 64, get_pc(env));
+    uint64_t res = dfsan_union(arg1_new, arg2_new, Mul, 64, arg1, arg2, get_pc(env));
     return dfsan_union(res,
                        CONST_LABEL,
                        Extract,
                        64,
                        127,
-                       64);
+                       64, get_pc(env));
 }
 
 /* z/sext_i32/64 is not real ext operation. */
@@ -274,39 +307,45 @@ uint64_t HELPER(symsan_sext_i32)(uint32_t op1, uint64_t op1_label, uint64_t ext_
 {
     if (op1_label == 0) return 0; /* op2 label is alway zero */
     size_t bits_to_keep = 32 - ext_bit;
-    uint64_t tmp = dfsan_union(op1_label, CONST_LABEL, Shl, 32, op1, bits_to_keep);
-    return dfsan_union(tmp, CONST_LABEL, AShr, 32, op1 << bits_to_keep, bits_to_keep);
+    CPUArchState *env = current_cpu->env_ptr;
+    uint64_t tmp = dfsan_union(op1_label, CONST_LABEL, Shl, 32, op1, bits_to_keep, get_pc(env));
+    return dfsan_union(tmp, CONST_LABEL, AShr, 32, op1 << bits_to_keep, bits_to_keep, get_pc(env));
 }
 uint64_t HELPER(symsan_sext_i64)(uint64_t op1, uint64_t op1_label, uint64_t ext_bit)
 {
     if (op1_label == 0) return 0; /* op2 label is alway zero */
     size_t bits_to_keep = 64 - ext_bit;
-    uint64_t tmp = dfsan_union(op1_label, CONST_LABEL, Shl, 64, op1, bits_to_keep);
-    return dfsan_union(tmp, CONST_LABEL, AShr, 64, op1 << bits_to_keep, bits_to_keep);
+    CPUArchState *env = current_cpu->env_ptr;
+    uint64_t tmp = dfsan_union(op1_label, CONST_LABEL, Shl, 64, op1, bits_to_keep, get_pc(env));
+    return dfsan_union(tmp, CONST_LABEL, AShr, 64, op1 << bits_to_keep, bits_to_keep, get_pc(env));
 }
 
 uint64_t HELPER(symsan_zext_i32)(uint32_t op1, uint64_t op1_label, uint64_t ext_bit)
 {
     if (op1_label == 0) return 0; /* op2 label is alway zero */
+    CPUArchState *env = current_cpu->env_ptr;
     // bitwise and
-    return dfsan_union(op1_label, CONST_LABEL, And, 32, op1, (1ull << ext_bit) - 1);
+    return dfsan_union(op1_label, CONST_LABEL, And, 32, op1, (1ull << ext_bit) - 1, get_pc(env));
 }
 uint64_t HELPER(symsan_zext_i64)(uint64_t op1, uint64_t op1_label, uint64_t ext_bit)
 {
     if (op1_label == 0) return 0; /* op2 label is alway zero */
-    return dfsan_union(op1_label, CONST_LABEL, And, 64, op1, (1ull << ext_bit) - 1);
+    CPUArchState *env = current_cpu->env_ptr;
+    return dfsan_union(op1_label, CONST_LABEL, And, 64, op1, (1ull << ext_bit) - 1, get_pc(env));
 }
 
 /* *ext_i32_i64 equals to the ext operation in z3 */
 uint64_t HELPER(symsan_zext_i32_i64)(uint32_t op1, uint64_t op1_label)
 {
     if (op1_label == 0) return 0; /* op2 label is alway zero */
-    return dfsan_union(op1_label, CONST_LABEL, ZExt, 64, op1, 32); // extend by 32 bits.
+    CPUArchState *env = current_cpu->env_ptr;
+    return dfsan_union(op1_label, CONST_LABEL, ZExt, 64, op1, 32, get_pc(env)); // extend by 32 bits.
 }
 uint64_t HELPER(symsan_sext_i32_i64)(uint32_t op1, uint64_t op1_label)
 {
     if (op1_label == 0) return 0; /* op2 label is alway zero */
-    return dfsan_union(op1_label, CONST_LABEL, SExt, 64, op1, 32); // extend by 32 bits.
+    CPUArchState *env = current_cpu->env_ptr;
+    return dfsan_union(op1_label, CONST_LABEL, SExt, 64, op1, 32, get_pc(env)); // extend by 32 bits.
 }
 
 /* Truncate a 64-bit value to 32-bit */
@@ -314,88 +353,98 @@ uint64_t HELPER(symsan_trunc_i64_i32)(uint64_t op1, uint64_t op1_label)
 {
     if (op1_label == 0) return 0;
     // Result is 32-bit.
-    return dfsan_union(op1_label, CONST_LABEL, Trunc, 32, op1, 32);
+    CPUArchState *env = current_cpu->env_ptr;
+    return dfsan_union(op1_label, CONST_LABEL, Trunc, 32, op1, 32, get_pc(env));
 }
 // https://github.com/chenju2k6/symsan/commit/3392e5b1d33b8ac6e350eeefb37ae861848ba9b2
 // bswap support
 uint64_t HELPER(symsan_bswap_i32)(uint32_t op1, uint64_t op1_label, uint64_t length)
 {
     if (op1_label == 0) return 0;
+    CPUArchState *env = current_cpu->env_ptr;
     uint64_t arg1, arg2, tmp, tmp1, tmp2, first_block, second_block;
     switch (length) {
         case 2:
             arg1 = dfsan_union(
-                dfsan_union(op1_label, CONST_LABEL, ZExt, 64, op1, 1),
+                dfsan_union(op1_label, CONST_LABEL, ZExt, 64, op1, 1, get_pc(env)),
                 CONST_LABEL,
                 Shl,
                 64,
                 op1,
-                8);
+                8,
+                get_pc(env));
             arg2 = dfsan_union(
                 op1_label,
                 CONST_LABEL,
                 LShr,
                 64,
                 op1,
-                8);
-            return dfsan_union(arg1, arg2, Or, 64, 0, 0);
+                8,
+                get_pc(env));
+            return dfsan_union(arg1, arg2, Or, 64, 0, 0, get_pc(env));
         case 4:
-            tmp = dfsan_union(op1_label, CONST_LABEL, LShr, 64, op1, 8);
+            tmp = dfsan_union(op1_label, CONST_LABEL, LShr, 64, op1, 8, get_pc(env));
             arg1 = dfsan_union(
                 tmp,
                 CONST_LABEL,
                 And,
                 64,
                 op1,
-                0x00ff00ff
+                0x00ff00ff,
+                get_pc(env)
             );
             arg2 = dfsan_union(
-                dfsan_union(op1_label, CONST_LABEL, And, 64, op1, 0x00ff00ff),
+                dfsan_union(op1_label, CONST_LABEL, And, 64, op1, 0x00ff00ff, get_pc(env)),
                 CONST_LABEL,
                 Shl,
                 64,
                 op1,
-                8
+                8,
+                get_pc(env)
             );
-            first_block = dfsan_union(arg1, arg2, Or, 64, 0, 0);
-            tmp1 = dfsan_union(first_block, CONST_LABEL, LShr, 64, op1, 16);
-            tmp2 = dfsan_union(first_block, CONST_LABEL, Shl, 64, op1, 16);
-            return dfsan_union(tmp1, tmp2, Or, 64, 0, 0);
+            first_block = dfsan_union(arg1, arg2, Or, 64, 0, 0, get_pc(env));
+            tmp1 = dfsan_union(first_block, CONST_LABEL, LShr, 64, op1, 16, get_pc(env));
+            tmp2 = dfsan_union(first_block, CONST_LABEL, Shl, 64, op1, 16, get_pc(env));
+            return dfsan_union(tmp1, tmp2, Or, 64, 0, 0, get_pc(env));
         case 8:
             tmp1 = dfsan_union(
-                dfsan_union(op1_label, CONST_LABEL, LShr, 64, op1, 8),
+                dfsan_union(op1_label, CONST_LABEL, LShr, 64, op1, 8, get_pc(env)),
                 CONST_LABEL,
                 And,
                 64,
                 op1,
-                0x00ff00ff00ff00ffull
+                0x00ff00ff00ff00ffull,
+                get_pc(env)
             );
             tmp2 = dfsan_union(
-                dfsan_union(op1_label, CONST_LABEL, And, 64, op1, 0x00ff00ff00ff00ffull),
+                dfsan_union(op1_label, CONST_LABEL, And, 64, op1, 0x00ff00ff00ff00ffull, get_pc(env)),
                 CONST_LABEL,
                 Shl,
                 64,
                 op1,
-                8
+                8,
+                get_pc(env)
             );
-            first_block = dfsan_union(tmp1, tmp2, Or, 64, 0, 0);
+            first_block = dfsan_union(tmp1, tmp2, Or, 64, 0, 0, get_pc(env));
             tmp1 = dfsan_union(
-                dfsan_union(first_block, CONST_LABEL, LShr, 64, op1, 16),
+                dfsan_union(first_block, CONST_LABEL, LShr, 64, op1, 16, get_pc(env)),
                 CONST_LABEL,
                 And,
                 64,
                 op1,
-                0x0000ffff0000ffffull
+                0x0000ffff0000ffffull,
+                get_pc(env)
             );
             tmp2 = dfsan_union(
-                dfsan_union(first_block, CONST_LABEL, And, 64, op1, 0x0000ffff0000ffffull),
+                dfsan_union(first_block, CONST_LABEL, And, 64, op1, 0x0000ffff0000ffffull, get_pc(env)),
                 CONST_LABEL,
                 Shl,
                 64,
                 op1,
-                16
+                16,
+                get_pc(env)
             );
-            second_block = dfsan_union(tmp1, tmp2, Or, 64, 0, 0);
+            second_block = dfsan_union(tmp1, tmp2, Or, 64, 0, 0, get_pc(env));
             return dfsan_union(
                 dfsan_union(
                     second_block,
@@ -403,7 +452,8 @@ uint64_t HELPER(symsan_bswap_i32)(uint32_t op1, uint64_t op1_label, uint64_t len
                     LShr,
                     64,
                     op1,
-                    32
+                    32,
+                    get_pc(env)
                 ),
                 dfsan_union(
                     second_block,
@@ -411,12 +461,14 @@ uint64_t HELPER(symsan_bswap_i32)(uint32_t op1, uint64_t op1_label, uint64_t len
                     Shl,
                     64,
                     op1,
-                    32
+                    32,
+                    get_pc(env)
                 ),
                 Or,
                 64,
                 0,
-                0
+                0,
+                get_pc(env)
             );
         default:
             g_assert_not_reached();
@@ -426,88 +478,98 @@ uint64_t HELPER(symsan_bswap_i32)(uint32_t op1, uint64_t op1_label, uint64_t len
 uint64_t HELPER(symsan_bswap_i64)(uint64_t op1, uint64_t op1_label, uint64_t length)
 {
     if (op1_label == 0) return 0;
+    CPUArchState *env = current_cpu->env_ptr;
     uint64_t arg1, arg2, tmp, tmp1, tmp2, first_block, second_block;
     switch (length) {
         case 2:
             arg1 = dfsan_union(
-                dfsan_union(op1_label, CONST_LABEL, ZExt, 64, op1, 1),
+                dfsan_union(op1_label, CONST_LABEL, ZExt, 64, op1, 1, get_pc(env)),
                 CONST_LABEL,
                 Shl,
                 64,
                 op1,
-                8);
+                8,
+                get_pc(env));
             arg2 = dfsan_union(
                 op1_label,
                 CONST_LABEL,
                 LShr,
                 64,
                 op1,
-                8);
-            return dfsan_union(arg1, arg2, Or, 64, 0, 0);
+                8,
+                get_pc(env));
+            return dfsan_union(arg1, arg2, Or, 64, 0, 0, get_pc(env));
         case 4:
-            tmp = dfsan_union(op1_label, CONST_LABEL, LShr, 64, op1, 8);
+            tmp = dfsan_union(op1_label, CONST_LABEL, LShr, 64, op1, 8, get_pc(env));
             arg1 = dfsan_union(
                 tmp,
                 CONST_LABEL,
                 And,
                 64,
                 op1,
-                0x00ff00ff
+                0x00ff00ff,
+                get_pc(env)
             );
             arg2 = dfsan_union(
-                dfsan_union(op1_label, CONST_LABEL, And, 64, op1, 0x00ff00ff),
+                dfsan_union(op1_label, CONST_LABEL, And, 64, op1, 0x00ff00ff, get_pc(env)),
                 CONST_LABEL,
                 Shl,
                 64,
                 op1,
-                8
+                8,
+                get_pc(env)
             );
-            first_block = dfsan_union(arg1, arg2, Or, 64, 0, 0);
-            tmp1 = dfsan_union(first_block, CONST_LABEL, LShr, 64, op1, 16);
+            first_block = dfsan_union(arg1, arg2, Or, 64, 0, 0, get_pc(env));
+            tmp1 = dfsan_union(first_block, CONST_LABEL, LShr, 64, op1, 16, get_pc(env));
             tmp2 = dfsan_union(
-                dfsan_union(first_block, CONST_LABEL, Shl, 64, op1, 48),
+                dfsan_union(first_block, CONST_LABEL, Shl, 64, op1, 48, get_pc(env)),
                 CONST_LABEL,
                 LShr,
                 64,
                 op1,
-                32
+                32,
+                get_pc(env)
             );
-            return dfsan_union(tmp1, tmp2, Or, 64, 0, 0);
+            return dfsan_union(tmp1, tmp2, Or, 64, 0, 0, get_pc(env));
         case 8:
             tmp1 = dfsan_union(
-                dfsan_union(op1_label, CONST_LABEL, LShr, 64, op1, 8),
+                dfsan_union(op1_label, CONST_LABEL, LShr, 64, op1, 8, get_pc(env)),
                 CONST_LABEL,
                 And,
                 64,
                 op1,
-                0x00ff00ff00ff00ffull
+                0x00ff00ff00ff00ffull,
+                get_pc(env)
             );
             tmp2 = dfsan_union(
-                dfsan_union(op1_label, CONST_LABEL, And, 64, op1, 0x00ff00ff00ff00ffull),
+                dfsan_union(op1_label, CONST_LABEL, And, 64, op1, 0x00ff00ff00ff00ffull, get_pc(env)),
                 CONST_LABEL,
                 Shl,
                 64,
                 op1,
-                8
+                8,
+                get_pc(env)
             );
-            first_block = dfsan_union(tmp1, tmp2, Or, 64, 0, 0);
+            first_block = dfsan_union(tmp1, tmp2, Or, 64, 0, 0, get_pc(env));
             tmp1 = dfsan_union(
-                dfsan_union(first_block, CONST_LABEL, LShr, 64, op1, 16),
+                dfsan_union(first_block, CONST_LABEL, LShr, 64, op1, 16, get_pc(env)),
                 CONST_LABEL,
                 And,
                 64,
                 op1,
-                0x0000ffff0000ffffull
+                0x0000ffff0000ffffull,
+                get_pc(env)
             );
             tmp2 = dfsan_union(
-                dfsan_union(first_block, CONST_LABEL, And, 64, op1, 0x0000ffff0000ffffull),
+                dfsan_union(first_block, CONST_LABEL, And, 64, op1, 0x0000ffff0000ffffull, get_pc(env)),
                 CONST_LABEL,
                 Shl,
                 64,
                 op1,
-                16
+                16,
+                get_pc(env)
             );
-            second_block = dfsan_union(tmp1, tmp2, Or, 64, 0, 0);
+            second_block = dfsan_union(tmp1, tmp2, Or, 64, 0, 0, get_pc(env));
             return dfsan_union(
                 dfsan_union(
                     second_block,
@@ -515,7 +577,8 @@ uint64_t HELPER(symsan_bswap_i64)(uint64_t op1, uint64_t op1_label, uint64_t len
                     LShr,
                     64,
                     op1,
-                    32
+                    32,
+                    get_pc(env)
                 ),
                 dfsan_union(
                     second_block,
@@ -523,12 +586,14 @@ uint64_t HELPER(symsan_bswap_i64)(uint64_t op1, uint64_t op1_label, uint64_t len
                     Shl,
                     64,
                     op1,
-                    32
+                    32,
+                    get_pc(env)
                 ),
                 Or,
                 64,
                 0,
-                0
+                0,
+                get_pc(env)
             );
         default:
             g_assert_not_reached();
@@ -549,8 +614,9 @@ uint64_t HELPER(symsan_extract_i32)(uint32_t arg, uint64_t arg_label, uint32_t o
     /* len is the extract length.
        ofs is the offset to start extract.
      */
-    uint32_t out = dfsan_union(arg_label, CONST_LABEL, Extract, 32, ofs + len - 1, ofs);
-    return dfsan_union(out, CONST_LABEL, ZExt, 32, 0, 32 - len);
+    CPUArchState *env = current_cpu->env_ptr;
+    uint32_t out = dfsan_union(arg_label, CONST_LABEL, Extract, 32, ofs + len - 1, ofs, get_pc(env));
+    return dfsan_union(out, CONST_LABEL, ZExt, 32, 0, 32 - len, get_pc(env));
 }
 uint64_t HELPER(symsan_extract_i64)(uint64_t arg, uint64_t arg_label, uint64_t ofs, uint64_t len)
 {
@@ -558,8 +624,9 @@ uint64_t HELPER(symsan_extract_i64)(uint64_t arg, uint64_t arg_label, uint64_t o
     /* len is the extract length.
        ofs is the offset to start extract.
      */
-    uint32_t out = dfsan_union(arg_label, CONST_LABEL, Extract, 64, ofs + len - 1, ofs);
-    return dfsan_union(out, CONST_LABEL, ZExt, 64, 0, 64 - len);
+    CPUArchState *env = current_cpu->env_ptr;
+    uint32_t out = dfsan_union(arg_label, CONST_LABEL, Extract, 64, ofs + len - 1, ofs, get_pc(env));
+    return dfsan_union(out, CONST_LABEL, ZExt, 64, 0, 64 - len, get_pc(env));
 }
 
 uint64_t HELPER(symsan_sextract_i32)(uint32_t arg, uint64_t arg_label, uint32_t ofs, uint32_t len)
@@ -568,8 +635,9 @@ uint64_t HELPER(symsan_sextract_i32)(uint32_t arg, uint64_t arg_label, uint32_t 
     /* len is the extract length.
        ofs is the offset to start extract.
      */
-    uint32_t out = dfsan_union(arg_label, CONST_LABEL, Extract, 32, ofs + len - 1, ofs);
-    return dfsan_union(out, CONST_LABEL, SExt, 32, 0, 32 - len);
+    CPUArchState *env = current_cpu->env_ptr;
+    uint32_t out = dfsan_union(arg_label, CONST_LABEL, Extract, 32, ofs + len - 1, ofs, get_pc(env));
+    return dfsan_union(out, CONST_LABEL, SExt, 32, 0, 32 - len, get_pc(env));
 }
 uint64_t HELPER(symsan_sextract_i64)(uint64_t arg, uint64_t arg_label, uint64_t ofs, uint64_t len)
 {
@@ -577,8 +645,9 @@ uint64_t HELPER(symsan_sextract_i64)(uint64_t arg, uint64_t arg_label, uint64_t 
     /* len is the extract length.
        ofs is the offset to start extract.
      */
-    uint32_t out = dfsan_union(arg_label, CONST_LABEL, Extract, 64, ofs + len - 1, ofs);
-    return dfsan_union(out, CONST_LABEL, SExt, 64, 0, 64 - len);
+    CPUArchState *env = current_cpu->env_ptr;
+    uint32_t out = dfsan_union(arg_label, CONST_LABEL, Extract, 64, ofs + len - 1, ofs, get_pc(env));
+    return dfsan_union(out, CONST_LABEL, SExt, 64, 0, 64 - len, get_pc(env));
 }
 
 uint64_t HELPER(symsan_deposit_i32)(uint32_t arg1, uint64_t arg1_label,
@@ -589,12 +658,12 @@ uint64_t HELPER(symsan_deposit_i32)(uint32_t arg1, uint64_t arg1_label,
     /* The symbolic implementation follows the alternative concrete
      * implementation of tcg_gen_deposit_i64 in tcg-op.c (which handles
      * architectures that don't support deposit directly). */
-
+    CPUArchState *env = current_cpu->env_ptr;
     uint64_t mask = (1ull << len) - 1;
-    uint64_t arg1_new_label = dfsan_union(arg1_label, CONST_LABEL, And, 32, arg1, ~(mask << ofs));
-    uint64_t arg2_new_label = dfsan_union(arg2_label, CONST_LABEL, And, 32, arg2, mask);
-    arg2_new_label = dfsan_union(arg2_new_label, CONST_LABEL, Shl, 32, arg2 & mask, ofs);
-    return dfsan_union(arg1_new_label, arg2_new_label, Or, 32, arg1 & ~(mask << ofs), (arg2 & mask) << ofs);
+    uint64_t arg1_new_label = dfsan_union(arg1_label, CONST_LABEL, And, 32, arg1, ~(mask << ofs), get_pc(env));
+    uint64_t arg2_new_label = dfsan_union(arg2_label, CONST_LABEL, And, 32, arg2, mask, get_pc(env));
+    arg2_new_label = dfsan_union(arg2_new_label, CONST_LABEL, Shl, 32, arg2 & mask, ofs, get_pc(env));
+    return dfsan_union(arg1_new_label, arg2_new_label, Or, 32, arg1 & ~(mask << ofs), (arg2 & mask) << ofs, get_pc(env));
 }
 
 uint64_t HELPER(symsan_deposit_i64)(uint64_t arg1, uint64_t arg1_label,
@@ -605,12 +674,12 @@ uint64_t HELPER(symsan_deposit_i64)(uint64_t arg1, uint64_t arg1_label,
     /* The symbolic implementation follows the alternative concrete
      * implementation of tcg_gen_deposit_i64 in tcg-op.c (which handles
      * architectures that don't support deposit directly). */
-
+    CPUArchState *env = current_cpu->env_ptr;
     uint64_t mask = (1ull << len) - 1;
-    uint64_t arg1_new_label = dfsan_union(arg1_label, CONST_LABEL, And, 64, arg1, ~(mask << ofs));
-    uint64_t arg2_new_label = dfsan_union(arg2_label, CONST_LABEL, And, 64, arg2, mask);
-    arg2_new_label = dfsan_union(arg2_new_label, CONST_LABEL, Shl, 64, arg2 & mask, ofs);
-    return dfsan_union(arg1_new_label, arg2_new_label, Or, 64, arg1 & ~(mask << ofs), (arg2 & mask) << ofs);
+    uint64_t arg1_new_label = dfsan_union(arg1_label, CONST_LABEL, And, 64, arg1, ~(mask << ofs), get_pc(env));
+    uint64_t arg2_new_label = dfsan_union(arg2_label, CONST_LABEL, And, 64, arg2, mask, get_pc(env));
+    arg2_new_label = dfsan_union(arg2_new_label, CONST_LABEL, Shl, 64, arg2 & mask, ofs, get_pc(env));
+    return dfsan_union(arg1_new_label, arg2_new_label, Or, 64, arg1 & ~(mask << ofs), (arg2 & mask) << ofs, get_pc(env));
 }
 
 uint64_t HELPER(symsan_extract2_i32)(uint32_t ah, uint64_t ah_label,
@@ -628,7 +697,8 @@ uint64_t HELPER(symsan_extract2_i32)(uint32_t ah, uint64_t ah_label,
         return al_label;
     if (ofs == 32)
         return ah_label;
-    uint64_t al_new = dfsan_union(al_label, CONST_LABEL, LShr, 32, al, ofs);
+    CPUArchState *env = current_cpu->env_ptr;
+    uint64_t al_new = dfsan_union(al_label, CONST_LABEL, LShr, 32, al, ofs, get_pc(env));
     return HELPER(symsan_deposit_i32)(al >> ofs, al_new, ah, ah_label, 32-ofs, ofs);
 }
 
@@ -647,7 +717,8 @@ uint64_t HELPER(symsan_extract2_i64)(uint64_t ah, uint64_t ah_label,
         return al_label;
     if (ofs == 64)
         return ah_label;
-    uint64_t al_new = dfsan_union(al_label, CONST_LABEL, LShr, 64, al, ofs);
+    CPUArchState *env = current_cpu->env_ptr;
+    uint64_t al_new = dfsan_union(al_label, CONST_LABEL, LShr, 64, al, ofs, get_pc(env));
     return HELPER(symsan_deposit_i64)(al >> ofs, al_new, ah, ah_label, 64-ofs, ofs);
 }
 
@@ -697,7 +768,6 @@ static uint64_t symsan_setcond_internal(CPUArchState *env, uint64_t arg1, uint64
     default:
         g_assert_not_reached();
     }
-    // fprintf(stderr, "sym branch 0x%lx\n", env->eip);
 
     //return __taint_trace_cmp(arg1_label, arg2_label, result_bits, result, predicate, arg1, arg2, env->eip);
     // Changed to architecture-independent program counter
@@ -718,27 +788,159 @@ uint64_t HELPER(symsan_setcond_i64)(CPUArchState *env, uint64_t arg1, uint64_t a
     return symsan_setcond_internal(env, arg1, arg1_label, arg2, arg2_label, cond, result, 64);
 }
 
+
+static inline bool is_stack_addr(target_ulong addr, CPUArchState *env) {
+    target_ulong sp = get_stack_pointer(env);
+    
+    if (sp == 0) return false;  // Invalid SP
+    
+    // Stack typically occupies ~1-2MB max per thread
+    // Check if addr is within reasonable distance of CURRENT SP
+    const target_ulong MAX_STACK_SIZE = 0x200000;  // 2MB max
+    
+    // For x86-64 kernel, stack grows DOWN from high to low addresses
+    // So valid stack addresses are: (SP - MAX_STACK_SIZE) to (SP + small_offset)
+    return (addr >= sp - MAX_STACK_SIZE && addr <= sp + 0x10000);
+}
+
+/* For any stack analysis we might happen to do in symbolic execution.  *
+ * A number of architectures are covered here to encourage all analysis *
+ * techniques to be architecture-agnostic.                              */
+
+static inline target_ulong get_stack_pointer(CPUArchState *env) {
+#if defined(TARGET_X86_64)
+    return env->regs[R_ESP];  // RSP
+#elif defined(TARGET_I386)
+    return env->regs[R_ESP];  // ESP
+#elif defined(TARGET_ARM)
+    return env->regs[13];     // R13 (SP)
+#elif defined(TARGET_AARCH64)
+    return env->xregs[31];    // SP (X31)
+#elif defined(TARGET_PPC) || defined(TARGET_PPC64)
+    return env->gpr[1];       // R1 (SP)
+#elif defined(TARGET_MIPS) || defined(TARGET_MIPS64)
+    return env->active_tc.gpr[29];  // $sp ($29)
+#elif defined(TARGET_SPARC) || defined(TARGET_SPARC64)
+    return env->regwptr[14];  // %sp (%o6/%i6)
+#else
+    // Insert your architecture here
+    #warning "Stack pointer not defined for this architecture"
+    return 0;
+#endif
+}
+
+static inline target_ulong get_frame_pointer(CPUArchState *env) {
+#if defined(TARGET_X86_64) || defined(TARGET_I386)
+    return env->regs[R_EBP];  // RBP/EBP
+#elif defined(TARGET_ARM)
+    return env->regs[11];     // R11 (FP) - by convention, not guaranteed
+#elif defined(TARGET_AARCH64)
+    return env->xregs[29];    // X29 (FP)
+#elif defined(TARGET_PPC) || defined(TARGET_PPC64)
+    return env->gpr[1];       // R1 also used as frame base (same as SP)
+#elif defined(TARGET_MIPS) || defined(TARGET_MIPS64)
+    return env->active_tc.gpr[30];  // $fp ($30) - if used
+#elif defined(TARGET_SPARC) || defined(TARGET_SPARC64)
+    return env->regwptr[30];  // %fp (%i6)
+#else
+    return 0;
+#endif
+}
+
+void check_guest_taint(target_ulong guest_addr, uint64_t load_length) {
+
+/*    
+CPUState *cpu = current_cpu;
+    if (!cpu) {
+        printf("[TAINT_CHECK] No CPU context\n");
+        return;
+    }
+    
+    CPUArchState *env = cpu->env_ptr;
+*/
+
+    CPUState *cpu = current_cpu;
+    if (!cpu) {
+        cpu = qemu_get_cpu(0);  // Fallback for GDB context
+    }
+    if (!cpu) {
+        printf("ERROR: Couldn't get valid CPU struct!\n");
+        return;
+    }
+
+    CPUArchState *env = cpu->env_ptr;    
+    // Translate guest virtual to host
+    void *host_addr = tlb_vaddr_to_host(env, guest_addr, MMU_DATA_LOAD, 0); // TO DO: Do we need to be using another MMU index for kernel addresses?
+    if (!host_addr) {
+        printf("[TAINT_CHECK] addr=0x%lx: Translation failed (not mapped)\n", guest_addr);
+        return;
+    }
+    
+    //printf("DEBUG: tlb_vaddr_to_host returned host address %p!\n", host_addr);
+    
+    // Check shadow memory
+    dfsan_label label = dfsan_read_label((uint8_t*)host_addr, load_length);
+    
+    // Get FP offset for context
+    target_ulong fp = get_frame_pointer(env);
+    target_ulong sp = get_stack_pointer(env);
+    int64_t fp_offset = (int64_t)guest_addr - (int64_t)fp;
+    int64_t sp_offset = (int64_t)guest_addr - (int64_t)sp;
+    
+    printf("[TAINT_CHECK] addr=0x%lx\n", guest_addr);
+    printf("  host_addr=%p\n", host_addr);
+    printf("  FP%s0x%llx SP%s0x%llx\n",
+           (fp_offset >= 0) ? "+" : "-", (unsigned long long)abs(fp_offset),
+           (sp_offset >= 0) ? "+" : "-", (unsigned long long)abs(sp_offset));
+    printf("  label=%u\n", label);
+    printf("  tainted=%s\n", (label != 0) ? "YES" : "NO");
+    
+    if (label != 0) {
+        printf("  [Use print_constraint(%u) to see expression]\n", label);
+    }
+}
+
 /* Guest memory opreation */
 // TO DO: Replace CPUArchState in the calling convention with CPUState?
 static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr, uint64_t addr_label,
                                      uint64_t load_length, uint8_t result_length, uint64_t mmu_idx)
 {
-    void *host_addr = tlb_vaddr_to_host_orig(env, addr, MMU_DATA_LOAD, mmu_idx);
+    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
+    /*
+    if ((uintptr_t)host_addr < 0x700000040000) {
+        printf("WARNING: symsan_load_guest_internal() returned address above 0x700000040000! PC: 0x%lx, Host address: %p, Guest Address: 0x%lx, MMU index: %ld\n", get_pc(env), host_addr, addr, mmu_idx);
+    }
+    */
     //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
     //void *host_addr = g2h(addr);
     if (host_addr == NULL) return 0; // No dfsan label associated with a null address
     if (addr_label) {
-        // fprintf(stderr, "sym load addr 0x%lx eip 0x%lx\n", addr, env->eip);
+        fprintf(stderr, "DEBUG: sym load addr 0x%lx eip 0x%lx\n", addr, get_pc(env));
         dfsan_label addr_label_new = \
             // Changed addr to host_addr in dfsan_union
-            dfsan_union(addr_label, CONST_LABEL, Equal, 64, (target_ulong) host_addr, 0);
+            dfsan_union(addr_label, CONST_LABEL, Equal, 64, (target_ulong) host_addr, 0, get_pc(env));
         __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, true, Equal, 0, 0, get_pc(env));
     }
-
-    uint64_t res_label = dfsan_read_label((uint8_t*)host_addr, load_length);
+    //uint64_t res_label = dfsan_read_label((uint8_t*)host_addr, load_length);
+    uint64_t res_label = (uint32_t)dfsan_read_label((uint8_t*)host_addr, load_length); // Bugfix test for type confusion
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic]op: load_guest_i%d addr: 0x%lx host_addr: %p size: %ld memory_expr: %ld\n",
                      result_length*8, addr, host_addr, load_length, res_label);
+    }
+    if (res_label != 0) {
+        // This is a symbolic load
+    
+        if (is_stack_addr(addr, env)) {
+            target_ulong sp = get_stack_pointer(env);
+            target_ulong fp = get_frame_pointer(env);
+            int64_t sp_offset = (int64_t)addr - (int64_t)sp;
+            int64_t fp_offset = (int64_t)addr - (int64_t)fp;
+            // Disable the check first for sanity
+            //if (abs(fp_offset) < 0x10000 || abs(sp_offset) < 0x10000) {
+                fprintf(stderr, "[SYMBOLIC_LOAD] addr=0x%lx SP%s0x%llx FP%s0x%llx label=%lu size=%ld PC=0x%llx\n",
+                        addr, (sp_offset >= 0) ? "+" : "-", (unsigned long long) abs(sp_offset), (fp_offset >=0) ? "+" : "-", (unsigned long long) abs(fp_offset), res_label, load_length, get_pc(env));
+            //}
+        }
     }
     return res_label;
 }
@@ -752,10 +954,6 @@ uint64_t HELPER(symsan_load_guest_i32)(CPUArchState *env, target_ulong addr, uin
 uint64_t HELPER(symsan_load_guest_i64)(CPUArchState *env, target_ulong addr, uint64_t addr_label,
                                  uint64_t length, uint64_t mmu_idx)
 {
-    static int call_count = 0;
-    if (call_count++ % 1000 == 0) {
-        fprintf(stderr, "[SYMBOLIC HELPER] symsan_load_guest_i64 called %d times\n", call_count);
-    }
     return symsan_load_guest_internal(env, addr, addr_label, length, 8, mmu_idx);
 }
 
@@ -763,11 +961,20 @@ uint64_t HELPER(symsan_load_guest_i64)(CPUArchState *env, target_ulong addr, uin
 static uint64_t symsan_load_host_internal(void *addr, uint64_t offset,
                                     uint64_t load_length, uint64_t result_length)
 {
-    #ifdef TARGET_I386
-    // This assert really only applies to x86 address space...
-    assert((uintptr_t)addr+offset >= 0x700000040000);
-    #endif
-    uint64_t res_label = dfsan_read_label((uint8_t*)addr + offset, load_length);
+    //assert((uintptr_t)addr+offset >= 0x700000040000); // Changed to warning for Android experiment
+    if ((uintptr_t)addr+offset < 0x700000040000) {
+        printf("WARNING: symsan_load_host_internal() address is less than 0x700000040000! (0x%lx) Called by: %p\n", (uintptr_t)addr+offset, __builtin_return_address(0));
+    }
+    //uint64_t res_label = dfsan_read_label((uint8_t*)addr + offset, load_length);
+    uint64_t raw_res = (uint64_t)dfsan_read_label((uint8_t*)addr + offset, load_length);
+    
+    // 2. FORCE clear the top 32 bits. 
+    // If the "radioactive" pointer disappears, we found the mismatch.
+    uint64_t res_label = raw_res & 0xFFFFFFFFULL; 
+
+    // This will now show '9' or '18' instead of '93824997963111'
+    //fprintf(stderr, "DEBUG: Final symsan_load_host_internal label: %lu\n", res_label);
+
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_HOST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic]op: load_host_i%ld addr: %p size: %ld memory_expr: %ld\n",
                      result_length*8, addr+offset, load_length, res_label);
@@ -793,27 +1000,39 @@ static void symsan_store_guest_internal(CPUArchState *env, uint64_t value_label,
                      length*8, addr, length, value_label);
     }
     // TO DO: Is storing based on host_addr here valid? If not, move tlb_vaddr_to_host() back down below the if (addr_label) statement and replace host_addr in dfsan_union() with addr
-    void *host_addr = tlb_vaddr_to_host_orig(env, addr, MMU_DATA_STORE, mmu_idx);
+    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    if ((uintptr_t)host_addr < 0x700000040000) {
+        printf("WARNING: symsan_store_guest_internal() returned address above 0x700000040000! PC: 0x%lx, Host address: %p, Guest Address: 0x%lx, MMU index: %ld\n", get_pc(env), host_addr, addr, mmu_idx);
+        return;
+    }
+    if ((uintptr_t)host_addr == 0x7fffb4e4c420) {
+        printf("XLA: 0x7fffb4e4c420 store from guest address 0x%lx, guest program counter 0x%lx\n", addr, get_pc(env));
+    }
     //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
     //void *host_addr = g2h(addr);
-    fprintf(stderr, "[STORE] addr=0x%lx, host_addr = %p, PC=0x%lx\n", addr, host_addr, GETPC());
-    fflush(stderr);
     if (host_addr == NULL) return; // Don't store labels for a null address
+    if (value_label != 0 && is_stack_addr(addr, env)) {
+        // TO DO: Should this only work within a limited range of the stack?
+        target_ulong fp = get_frame_pointer(env);
+        target_ulong sp = get_stack_pointer(env);
+        int64_t fp_offset = (int64_t)addr - (int64_t)fp;
+        int64_t sp_offset = (int64_t)addr - (int64_t)sp;
+        //if (abs(fp_offset) < 0x10000 || abs(sp_offset) < 0x10000) { // Basic sanity check; the stack isn't like, a megabyte
+            fprintf(stderr, "[SYMBOLIC_STORE] FP%s0x%llx SP%s0x%llx label=%lu len=%ld PC=0x%llx\n",
+                    (fp_offset >=0) ? "+" : "-", (unsigned long long) abs(fp_offset), (sp_offset >= 0) ? "+" : "-", (unsigned long long) abs(sp_offset),  value_label, length, get_pc(env));
+        //}
+    }
     if (addr_label) {
         // fprintf(stderr, "sym store addr 0x%lx eip 0x%lx\n", addr, env->eip);
         // Replaced addr with host_addr in dfsan_union()
         dfsan_label addr_label_new = \
-            dfsan_union(addr_label, CONST_LABEL, Equal, 64, (target_ulong) host_addr, 0);
+            dfsan_union(addr_label, CONST_LABEL, Equal, 64, (target_ulong) host_addr, 0, get_pc(env));
         __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, true, Equal, 0, 0, get_pc(env));
     }
 
-    #ifdef TARGET_I386
-    assert((uintptr_t)host_addr >= 0x700000040000);
-    #endif
-    fprintf(stderr, "[STORE] Storing label %lu...\n", value_label);
-    fflush(stderr);
-    dfsan_store_label(value_label, (uint8_t*)host_addr, length);
-    fprintf(stderr, "[STORE] dfsan_store_label() terminated successfully!\n");
+    //printf("DEBUG: Storing label via symsan_store_guest_internal(), host addr: %p, guest addr: 0x%lx, guest PC: 0x%lx, length %ld\n", host_addr, addr, get_pc(env), length);
+    //assert((uintptr_t)host_addr >= 0x700000040000); // Changed to warning for Android experiment
+    dfsan_store_label(value_label, (uint8_t*)host_addr, length, get_pc(env));
     // g_assert_not_reached();
 
 }
@@ -834,28 +1053,39 @@ void HELPER(symsan_store_host_i32)(uint64_t value_label,
                                 void *addr,
                                 uint64_t offset, uint64_t length)
 {
-    #ifdef TARGET_I386
-    assert((uintptr_t)addr+offset >= 0x700000040000);
-    #endif
+    if ((uintptr_t)addr+offset < 0x700000040000) {
+        printf("WARNING: addr+offset in symsan_store_host_i32() < 0x700000040000! (0x%lx)\n", (uintptr_t)addr+offset);
+        return;
+    }
+    CPUArchState *env = current_cpu->env_ptr;
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_HOST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic] op: store_host_i32 addr: %p value_label: %ld length %ld\n",
                         addr+offset, value_label, length);
     }
-    dfsan_store_label(value_label, (uint8_t*)addr + offset, length);
+    //printf("DEBUG: dfsan_store_label in symsan_store_host_i32(), value_label 0x%lx, addr+offset %p, length %ld\n", value_label, addr+offset, length);
+    dfsan_store_label(value_label, (uint8_t*)addr + offset, length, get_pc(env));
 }
 
 void HELPER(symsan_store_host_i64)(uint64_t value_label,
                                 void *addr,
                                 uint64_t offset, uint64_t length)
 {
+// Use the global current_cpu to get the actual env pointer for this thread
+    CPUArchState *env = current_cpu->env_ptr;
+    intptr_t diff = (intptr_t)addr - (intptr_t)env;
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_HOST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic] op: store_host_i64 addr: %p value_label: %ld length %ld\n",
                         addr+offset, value_label, length);
     }
-    #ifdef TARGET_I386
-    assert((uintptr_t)addr+offset >= 0x700000040000);
-    #endif
-    dfsan_store_label(value_label, (uint8_t*)addr + offset, length);
+    //assert((uintptr_t)addr+offset >= 0x700000040000);
+    if ((uintptr_t)addr+offset < 0x700000040000) {
+        printf("[RT-DEBUG] addr: %p | env: %p | diff: %ld | offset: %lu | RA: %p\n",
+               addr, (void *)env, diff, (unsigned long)offset, __builtin_return_address(0));
+        printf("WARNING: addr+offset < 0x700000040000 in symsan_store_host_i64()! (0x%lx) Returning without storing label. This came from RA %p\n", (uintptr_t)addr+offset, __builtin_return_address(0)); // For Android, don't enforce this constraint
+        return;
+    }
+    //printf("DEBUG: dfsan_store_label in symsan_store_host_i64(), value label 0x%lx, addr+offset %p, length %ld\n", value_label, addr+offset, length);
+    dfsan_store_label(value_label, (uint8_t*)addr + offset, length, get_pc(env));
 }
 
 
@@ -866,78 +1096,78 @@ void HELPER(symsan_store_host_i64)(uint64_t value_label,
 void HELPER(symsan_check_load_guest)(CPUArchState *env, target_ulong addr, uint64_t length, uint64_t mmu_idx) {
     //void *host_addr = g2h(addr);
     //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
-    void *host_addr = tlb_vaddr_to_host_orig(env, addr, MMU_DATA_LOAD, mmu_idx);
+    CPUState *cs = env_cpu(env);
+    if (cs->in_symsan_helper) return; // For testing, please remove
+    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
     if (host_addr == NULL) return;
     #ifdef TARGET_I386
     if (addr == 0x10000000) {
     #else
     // For the moment, the catch-all is an address for ARM targets. We should try other architectures as well.
 
-    if (addr >= 0xFFFF000000000000ULL) {
-        return;
-    }
     if (addr == 0x50000000) {
+    //if (addr == 0x400000) {
     #endif
         if (demo_set == 0) {
             demo_set = 1;
             printf("ZOMG LOAD FROM 0x%lx DETECTED!!!!11\n", addr);
             if (second_ccache_flag == 0) {
-                printf("[DEBUG] About to call dfsan_set_label\n");
-                fflush(stdout);
-                dfsan_set_label(0xBEEF, (uint8_t*)host_addr, 8);
-                printf("[DEBUG] dfsan_set_label returned successfully\n");
-                fflush(stdout);
-                printf("[TAINT] Test taint set at host %p\n", host_addr);
+                dfsan_label label = dfsan_create_label(0); // Changed from 0xBEEF
+                dfsan_set_label(label, host_addr, 1, get_pc(env));
+                //dfsan_set_label(label, (uint8_t*)host_addr, 8);
             }
         }
+    }
+    if ((uintptr_t)host_addr < 0x700000040000) {
+        printf("WARNING: symsan_check_load_guest() returned address below 0x700000040000! PC: 0x%lx, Host address: %p, Guest Address: 0x%lx, MMU index: %ld\n", get_pc(env), host_addr, addr, mmu_idx);
     }
     //assert((uintptr_t)host_addr >= 0x700000040000);
     uint32_t res_label = dfsan_read_label((uint8_t*)host_addr, length);
     if (res_label != 0) {
-        printf("[DEBUG] Non-zero label detected (%u), about to raise exception\n", res_label);
-        printf("[DEBUG] Symbolic load at PC=0x%lx, addr=0x%lx, host_addr=0x%p kernel=%d\n",
-                GETPC(),  // Current PC
-                addr, host_addr,
-                addr >= 0xFFFF000000000000ULL);
-        fflush(stdout);
         if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
             // fprintf(stderr, "[memtrace:switch] op: load_guest addr: 0x%lx host_addr %p mode: concrete\n",
             //                         addr, host_addr);
         }
-        second_ccache_flag = 1;
-        printf("[DEBUG] About to call raise_exception\n");
-        fflush(stdout);
+        // TEMPORARY CODE: No raise exception
+
+        if (second_ccache_flag == 0) {
+            second_ccache_flag = 1; // Put this back down below
+            tb_flush(cs);
+        }
+        else {
+            printf("WARNING: System attempting raise another exception! Ignoring...\n");
+            return;
+        }
         #ifdef TARGET_I386
         raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
         #elif defined(TARGET_ARM)
-        CPUState *cs = env_cpu(env);
-        printf("[DEBUG] Setting exception_index\n");
-        cs->exception_index = EXCP_SWITCH;
-        printf("Calling cpu_loop_exit_restore with PC %lx\n", GETPC());
-        cpu_loop_exit_restore(cs, GETPC());
-        //raise_exception_ra(env, EXCP_SWITCH, 0, 1, GETPC());
+        raise_exception_ra(env, EXCP_SWITCH, 0, 1, GETPC());
         #else
         #error "Unsupported architecture for symbolic execution"
         #endif
-        printf("[DEBUG] After raise_exception (should not print)\n");
-        fflush(stdout);
     }
 }
 void HELPER(symsan_check_store_guest)(CPUArchState *env, target_ulong addr, uint64_t length, uint64_t mmu_idx){
     assert(second_ccache_flag != 1);
     uint32_t value_label = 0;
-    void *host_addr = tlb_vaddr_to_host_orig(env, addr, MMU_DATA_STORE, mmu_idx);
+    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
     if (host_addr == NULL) return; // Don't store labels for a null address
     //void *host_addr = g2h(addr);
     /*
     if ((uintptr_t) host_addr < 0x700000040000) {
         printf("WARNING: host_addr is %p\n", host_addr);
     }
+    
+    // This can't be run in symbolic mode and the check shouldn't apply. For now.
+    if ((uintptr_t)host_addr < 0x700000040000) {
+        printf("WARNING: symsan_check_store_guest() returned address above 0x700000040000! PC: 0x%lx, Host address: %p, Guest Address: 0x%lx, MMU index: %ld\n", get_pc(env), host_addr, addr, mmu_idx);
+        return;
+    }
     */
     //assert((uintptr_t)host_addr >= 0x700000040000);
     // if (!noSymbolicData)
     // fprintf(stderr, "[memtrace] op: check_store_guest addr: 0x%lx mode: concrete\n", addr);
-    dfsan_store_label(value_label, (uint8_t*)host_addr, length);
+    dfsan_store_label(value_label, (uint8_t*)host_addr, length, get_pc(env));
 }
 
 /* Check the register status at the end of one basic block in symbolic mode
