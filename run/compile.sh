@@ -132,7 +132,8 @@ if [ $compile_symfit_symsan == 1 ]
         --disable-vte                    \
         --disable-opengl                 \
         --disable-virglrenderer          \
-        --target-list=x86_64-linux-user  \
+        --disable-werror                 \
+        --target-list="x86_64-linux-user,x86_64-softmmu,aarch64-softmmu,aarch64-linux-user"  \
         --enable-capstone=git            \
         --symcc-source=/workdir/symcc    \
         --symcc-build=/workdir/symcc_build       \
@@ -149,7 +150,8 @@ if [ $compile_symfit_symsan == 1 ]
         --disable-vte                    \
         --disable-opengl                 \
         --disable-virglrenderer          \
-        --target-list=x86_64-linux-user  \
+        --disable-werror                 \
+        --target-list="x86_64-linux-user,x86_64-softmmu,aarch64-softmmu,aarch64-linux-user"  \
         --enable-capstone=git            \
         --symcc-source=/workdir/symcc    \
         --symcc-build=/workdir/symcc_build       \
