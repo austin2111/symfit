@@ -1,90 +1,87 @@
 # SymFit
-
 SymFit is a symbolic execution framework for analyzing binaries, supporting multiple backends such as SymCC and SymSan. This document provides instructions for building and running SymFit using Docker.
 
+## Prerequisites
+- Docker installed and running on your system
+- Sufficient permissions to perform Docker pull and run operations (either root/sudo, or your user added to the `docker` group)
+- A GitHub account with access to the SymFit container registry (`ghcr.io`)
 
-## How to Build the Docker Image
-
-Navigate to the root directory containing the `Dockerfile`, then build the image:
-
-```bash
-docker build -t symfit_env .
-```
-
-## Launch the Container
-
-Enter the `run` folder and launch the container:
+## Installation
+Clone this repository, enter the `symfit` directory, and run the install script:
 
 ```bash
-cd run
-./launch.sh
-```
-
-## Setup SymFit Inside the Container
-
-Once inside the container:
-
-1. Clone the SymFit main repository:
-
-```bash
-cd /workdir
 git clone https://github.com/bitsecurerlab/symfit.git
+cd symfit
+./install.sh
 ```
 
-2. Clone the required backend repositories:
+This will pull the SymFit Docker image, clone the necessary dependencies, and compile all components. Once installation is complete, you will be dropped into an interactive shell inside the Docker container, ready to run SymFit. When entering the Symfit Docker environment after installation completes, please use the launch.sh script.
+
+## Usage
+SymFit is operated through the `fgtest` wrapper program, located at `symsan_build/driver/fgtest` once compilation is complete. The wrapper accepts environment variables to configure execution behavior, followed by the path to the emulator and any QEMU options.
+
+The general invocation looks like this:
 
 ```bash
-# SymCC backend
-git clone https://github.com/bitsecurerlab/symcc.git
-
-# SymSan backend
-git clone https://github.com/bitsecurerlab/symsan.git
+SYMCC_INPUT_FILE=<input> SYMCC_OUTPUT_DIR=<output> symsan_build/driver/fgtest symfit_symsan_build/x86_64-softmmu/symqemu-system-x86_64 [qemu options]
 ```
 
-> If submodules are used, run:
-> 
-> ```bash
-> git submodule update --init --recursive
-> ```
-
-3. Create the following build directories inside the workdir:
+### System Mode
+When running in system mode, set the input source to stdin and specify an output directory for generated test cases:
 
 ```bash
-mkdir -p symcc_build symfit_symcc_build symsan_build symfit_symsan_build
+SYMCC_INPUT_FILE=stdin SYMCC_OUTPUT_DIR=/tmp symsan_build/driver/fgtest symfit_symsan_build/x86_64-softmmu/symqemu-system-x86_64 -your -options -here
 ```
 
-## Compilation
+`SYMCC_INPUT_FILE=stdin` tells the solver to expect input from a terminal rather than a file, which is required for system mode. `SYMCC_OUTPUT_DIR` specifies where the solver will write generated test cases.
 
-Use the provided `compile.sh` script to build components.
+### Userland Binaries and Hybrid Fuzzing
+When analyzing userland binaries within QEMU, an AFL++ coverage map can be passed to the solver using the `SYMCC_AFL_COVERAGE_MAP` option. This allows constraints to be imported from AFL++ for use in hybrid fuzzing environments.
 
-### Usage
+### Marking Variables as Symbolic
+In system mode, variables in compiled programs can be marked symbolic by loading them into memory from the address `0x10000000`. This is done by mapping that address and reading or writing through it. The following example marks a variable as symbolic and prints its value at runtime:
 
-Compile a specific target:
+```c
+#include <stdio.h>
+#include <sys/mman.h>
 
-```bash
-./compile.sh --symfit_symcc
+int main(void) {
+    void *ptr = mmap((void *)0x10000000, 1024,
+                     PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                     -1, 0);
+    if (ptr == MAP_FAILED) {
+        fprintf(stderr, "Couldn't mmap!\n");
+        return 1;
+    }
+
+    unsigned int *iptr = (unsigned int *)ptr;
+    *iptr = 1; // Concrete value - can be reassigned normally
+    printf("The value of the symbolic variable at the time of execution is %d\n", *iptr);
+
+    munmap((void *)0x10000000, 1024);
+    return 0;
+}
 ```
 
-Compile multiple components:
+> **Note:** The target address (`0x10000000`) will need to differ on other emulated CPU architectures, as it could conflict with memory-mapped I/O or other components. No other modifications are needed — the solver will automatically track propagation of symbolic values throughout system memory, generating constraints and producing test cases for the uninstrumented binary.
 
-```bash
-./compile.sh --symcc --symfit_symcc
+### Intercepting Syscall Arguments
+Rather than instrumenting individual arguments, the emulator can be signaled to create labels for all syscall arguments automatically. Compile `syscall_instrument.c` for your preferred guest operating system, then use it to bracket your target program:
+
+```sh
+./syscall_instrument enable && ./target_executable && ./syscall_instrument disable
 ```
 
-### Options
+It is recommended to halt instrumentation immediately after the target program terminates in order to reduce noise.
 
-- `--symcc` : Compile SymCC  
-- `--symsan` : Compile SymSan  
-- `--symfit_symcc` : Compile SymFit with SymCC backend  
-- `--symfit_symsan` : Compile SymFit with SymSan backend
+## MCP Server for LLM Agents
+SymFit includes an MCP (Model Context Protocol) server that enables LLM agents to perform automated concolic execution on binaries. It provides a standardized interface for running symbolic execution campaigns, managing test case corpora, analyzing coverage and results, and automating binary analysis workflows.
 
-> Note: If errors occur when using `--symfit_*` options, you may need to modify `compile.sh` to append the following:
+See the [SymFit MCP repository](https://github.com/bitsecurerlab/symfit) for more details.
 
-```bash
---symsan-source=/workdir/symsan \
---symsan-build=/workdir/symsan_build \
---symcc-source=/workdir/symcc \
---symcc-build=/workdir/symcc_build \
-```
+## Contributing
+Contributions are welcome! Please feel free to submit issues and pull requests.
 
-
+## License
+See the LICENSE file for details.
