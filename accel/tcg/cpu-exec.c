@@ -510,7 +510,7 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
         if (*ret == EXCP_DEBUG) {
             cpu_handle_debug_exception(cpu);
         }
-        #ifndef(CONFIG_USER_ONLY)
+        #ifndef CONFIG_USER_ONLY
         if (*ret == EXCP_SWITCH) {
             // Much of this code was added during the debugging phase. Pretty much all of it can be reverted to what's in the previous commit - and in fact, it really should be
             second_ccache_flag = 1;
