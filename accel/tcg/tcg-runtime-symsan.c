@@ -7,6 +7,7 @@
 #include "tcg.h"
 #include "qemu/cutils.h"
 #include "dfsan_interface.h"
+#include "symfit-telemetry/symfit_telemetry.h"
 
 static bool demo_set = 0;
 
@@ -935,6 +936,25 @@ static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr,
             target_ulong fp = get_frame_pointer(env);
             int64_t sp_offset = (int64_t)addr - (int64_t)sp;
             int64_t fp_offset = (int64_t)addr - (int64_t)fp;
+            if (telemetry_enabled) {
+                char jsonbuffer[512];
+                snprintf(jsonbuffer, sizeof(jsonbuffer) - 1,
+                    "{"
+                    "\"source\": \"qemu\","
+                    "\"trigger\": \"symbolic_load\","
+                    "\"addr\": \"0x%lx\","
+                    "\"sp\": \"%s0x%llx\","
+                    "\"fp\": \"%s0x%llx\","
+                    "\"label\": %lu,"
+                    "\"size\": %ld,"
+                    "\"pc\": \"0x%llx\""
+                    "}",
+                addr,
+                (sp_offset >= 0) ? "+" : "-", (unsigned long long)abs(sp_offset),
+                (fp_offset >= 0) ? "+" : "-", (unsigned long long)abs(fp_offset),
+                res_label, load_length, get_pc(env));
+                telemetry_send(jsonbuffer);
+            }
             // Disable the check first for sanity
             //if (abs(fp_offset) < 0x10000 || abs(sp_offset) < 0x10000) {
                 fprintf(stderr, "[SYMBOLIC_LOAD] addr=0x%lx SP%s0x%llx FP%s0x%llx label=%lu size=%ld PC=0x%llx\n",
@@ -1017,6 +1037,25 @@ static void symsan_store_guest_internal(CPUArchState *env, uint64_t value_label,
         target_ulong sp = get_stack_pointer(env);
         int64_t fp_offset = (int64_t)addr - (int64_t)fp;
         int64_t sp_offset = (int64_t)addr - (int64_t)sp;
+        if (telemetry_enabled) {
+            char jsonbuffer[512];
+            snprintf(jsonbuffer, sizeof(jsonbuffer) - 1,
+                "{"
+                "\"source\": \"qemu\","
+                "\"trigger\": \"symbolic_store\","
+                "\"addr\": \"0x%lx\","
+                "\"sp\": \"%s0x%llx\","
+                "\"fp\": \"%s0x%llx\","
+                "\"label\": %lu,"
+                "\"size\": %ld,"
+                "\"pc\": \"0x%llx\""
+                "}",
+                addr,
+                (sp_offset >= 0) ? "+" : "-", (unsigned long long)abs(sp_offset),
+                (fp_offset >= 0) ? "+" : "-", (unsigned long long)abs(fp_offset),
+                value_label, length, get_pc(env));
+            telemetry_send(jsonbuffer);
+        }
         //if (abs(fp_offset) < 0x10000 || abs(sp_offset) < 0x10000) { // Basic sanity check; the stack isn't like, a megabyte
             fprintf(stderr, "[SYMBOLIC_STORE] FP%s0x%llx SP%s0x%llx label=%lu len=%ld PC=0x%llx\n",
                     (fp_offset >=0) ? "+" : "-", (unsigned long long) abs(fp_offset), (sp_offset >= 0) ? "+" : "-", (unsigned long long) abs(sp_offset),  value_label, length, get_pc(env));

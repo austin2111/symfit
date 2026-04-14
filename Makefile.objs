@@ -104,6 +104,11 @@ version-obj-$(CONFIG_WIN32) += $(BUILD_DIR)/version.o
 util-obj-y +=  trace/
 
 ######################################################################
+# telemetry/agent integration
+common-obj-y += symfit-telemetry/
+######################################################################
+
+######################################################################
 # guest agent
 
 # FIXME: a few definitions from qapi/qapi-types.o and
